@@ -55,6 +55,7 @@ cleanup_on_error() {
     [[ -d "$INSTALL_DIR" ]] && rm -rf "$INSTALL_DIR"
     [[ -f /usr/share/applications/openvpn-gui.desktop ]] && rm -f /usr/share/applications/openvpn-gui.desktop
     [[ -f /etc/polkit-1/rules.d/50-openvpn-gui.rules ]] && rm -f /etc/polkit-1/rules.d/50-openvpn-gui.rules
+    [[ -f /etc/sudoers.d/openvpn-gui-sudo ]] && rm -f /etc/sudoers.d/openvpn-gui-sudo
     
     exit $exit_code
 }
@@ -193,36 +194,85 @@ if id -nG "$TARGET_USER" | grep -qw "openvpn"; then
 else
     usermod -aG openvpn "$TARGET_USER"
     log_success "User $TARGET_USER zur openvpn-Gruppe hinzugefügt"
+    
+    # Direkt die Gruppenmitgliedschaft aktualisieren für aktuelle Session
     log_warning "WICHTIG: User muss sich neu anmelden, damit Gruppenänderungen wirksam werden!"
 fi
 
 # ============================================================================
-# Polkit-Regel für OpenVPN
+# Sudoers Konfiguration für passwortloses Starten/Stoppen
 # ============================================================================
 
-log_info "Konfiguriere Polkit-Regeln..."
+log_info "Konfiguriere sudoers für passwortloses Starten/Stoppen von OpenVPN..."
 
-# Erstelle Polkit-Regel
-cat > /etc/polkit-1/rules.d/50-openvpn-gui.rules << 'EOF'
-/* Allow members of the openvpn group to run openvpn without password */
-polkit.addRule(function(action, subject) {
-    if (action.id == "org.freedesktop.policykit.exec" &&
-        action.lookup("program") == "/usr/sbin/openvpn" &&
-        subject.isInGroup("openvpn")) {
-        return polkit.Result.YES;
-    }
-});
-EOF
-
-chmod 644 /etc/polkit-1/rules.d/50-openvpn-gui.rules
-
-# Polkit neu laden
-if systemctl is-active --quiet polkit; then
-    systemctl reload polkit || systemctl restart polkit
-    log_success "Polkit-Regeln konfiguriert"
-else
-    log_warning "Polkit läuft nicht. Bitte manuell neu starten."
+SUDOERS_FILE_OPENVPN_GUI="/etc/sudoers.d/openvpn-gui-sudo"
+# Robust detection of absolute paths for required binaries
+OPENVPN_PATH=$(command -v openvpn || true)
+if [ -z "$OPENVPN_PATH" ] || [[ ! "$OPENVPN_PATH" = /* ]]; then
+    log_warning "Befehl 'openvpn' nicht gefunden oder nicht absolut. Verwende Fallback /usr/sbin/openvpn."
+    OPENVPN_PATH="/usr/sbin/openvpn"
 fi
+
+# Prefer external kill binary over shell builtin
+if [[ -x /bin/kill ]]; then
+    KILL_PATH="/bin/kill"
+elif [[ -x /usr/bin/kill ]]; then
+    KILL_PATH="/usr/bin/kill"
+else
+    log_warning "Kein externer 'kill' Befehl gefunden. Sudoers-Regel für Stoppen könnte fehlschlagen. Verwende Fallback /bin/kill."
+    KILL_PATH="/bin/kill"
+fi
+
+log_info "Verwende Pfad '$OPENVPN_PATH' für 'openvpn' in der Sudoers-Regel."
+log_info "Verwende Pfad '$KILL_PATH' für 'kill' in der Sudoers-Regel."
+
+# Erstelle Sudoers-Regel Inhalt
+# TARGET_USER wird durch den Benutzernamen ersetzt, der das Skript ausführt (z.B. rujbin)
+# Erlaube spezifische Kommandos:
+# 1. openvpn mit beliebigen Argumenten (für das Starten der Verbindung)
+# 2. kill -SIGTERM -<PGID> (um die Prozessgruppe sauber zu beenden)
+# 3. kill -SIGKILL -<PGID> (um die Prozessgruppe hart zu beenden, falls SIGTERM fehlschlägt)
+# 4. kill -SIGTERM <PID> (Fallback, falls PGID nicht verfügbar)
+# 5. kill -SIGKILL <PID> (Fallback, falls PGID nicht verfügbar)
+SUDOERS_CONTENT=$(cat <<EOF
+# Erlaube $TARGET_USER, OpenVPN GUI Operationen ohne Passwort auszuführen
+$TARGET_USER ALL=(root) NOPASSWD: $OPENVPN_PATH *
+$TARGET_USER ALL=(root) NOPASSWD: $KILL_PATH -SIGTERM -*
+$TARGET_USER ALL=(root) NOPASSWD: $KILL_PATH -TERM -*
+$TARGET_USER ALL=(root) NOPASSWD: $KILL_PATH -15 -*
+$TARGET_USER ALL=(root) NOPASSWD: $KILL_PATH -SIGKILL -*
+$TARGET_USER ALL=(root) NOPASSWD: $KILL_PATH -KILL -*
+$TARGET_USER ALL=(root) NOPASSWD: $KILL_PATH -9 -*
+$TARGET_USER ALL=(root) NOPASSWD: $KILL_PATH -SIGTERM *
+$TARGET_USER ALL=(root) NOPASSWD: $KILL_PATH -TERM *
+$TARGET_USER ALL=(root) NOPASSWD: $KILL_PATH -15 *
+$TARGET_USER ALL=(root) NOPASSWD: $KILL_PATH -SIGKILL *
+$TARGET_USER ALL=(root) NOPASSWD: $KILL_PATH -KILL *
+$TARGET_USER ALL=(root) NOPASSWD: $KILL_PATH -9 *
+EOF
+)
+
+# Temporäre Datei für visudo Syntax-Check
+TMP_SUDOERS_FILE=$(mktemp)
+echo "$SUDOERS_CONTENT" > "$TMP_SUDOERS_FILE"
+
+# Syntax prüfen
+if visudo -cf "$TMP_SUDOERS_FILE"; then
+    log_success "Sudoers-Syntax ist korrekt."
+    # Sudoers-Datei schreiben
+    echo "$SUDOERS_CONTENT" > "$SUDOERS_FILE_OPENVPN_GUI"
+    chmod 0440 "$SUDOERS_FILE_OPENVPN_GUI"
+    log_success "Sudoers-Regel in $SUDOERS_FILE_OPENVPN_GUI geschrieben."
+else
+    log_error "Sudoers-Syntax ist fehlerhaft. Bitte manuell prüfen: $TMP_SUDOERS_FILE"
+    log_error "Die Regel wurde NICHT angewendet."
+    # Hier könnten wir entscheiden, ob wir abbrechen oder mit Warnung fortfahren
+    # Fürs Erste brechen wir ab, da dies ein kritisches Feature ist.
+    rm -f "$TMP_SUDOERS_FILE"
+    exit 1
+fi
+
+rm -f "$TMP_SUDOERS_FILE"
 
 # ============================================================================
 # Projekt-Dateien kopieren
@@ -484,11 +534,11 @@ else
     log_error "✗ Virtuelle Umgebung nicht aktivierbar"
 fi
 
-# Test 3: Polkit-Regel
-if [[ -f /etc/polkit-1/rules.d/50-openvpn-gui.rules ]]; then
-    log_success "✓ Polkit-Regel installiert"
+# Test 3: Sudoers-Regel
+if [[ -f /etc/sudoers.d/openvpn-gui-sudo ]]; then
+    log_success "✓ Sudoers-Regel installiert"
 else
-    log_error "✗ Polkit-Regel fehlt"
+    log_error "✗ Sudoers-Regel fehlt"
 fi
 
 # Test 4: OpenVPN
@@ -578,7 +628,7 @@ log_info "Installierte Komponenten:"
 echo "  • Anwendung:     $INSTALL_DIR"
 echo "  • Executable:    /usr/local/bin/openvpn-gui"
 echo "  • Desktop-Entry: /usr/share/applications/openvpn-gui.desktop"
-echo "  • Polkit-Regel:  /etc/polkit-1/rules.d/50-openvpn-gui.rules"
+echo "  • Sudoers-Regel: /etc/sudoers.d/openvpn-gui-sudo"
 echo "  • Log-Datei:     $LOG_FILE"
 echo
 
