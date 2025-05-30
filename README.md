@@ -82,8 +82,7 @@ Contributions are welcome! Please open an issue or submit a pull request on the 
 
 ### License
 
-No license specified. Please add a `LICENSE` file to clarify terms.
-
+GPLv3
 ---
 
 ## Deutsch
@@ -167,5 +166,4 @@ Hierdurch werden installierte Dateien und Desktop-Einträge entfernt, VPN-Konfig
 Beiträge, Fehlerberichte und Feature-Anfragen sind willkommen. Bitte öffnen Sie ein Issue oder senden Sie einen Pull Request.
 
 ### Lizenz
-
-Keine Lizenz angegeben. Bitte fügen Sie eine `LICENSE`-Datei hinzu, um die Nutzungsbedingungen zu klären. 
+GPLv3
