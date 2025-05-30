@@ -31,7 +31,7 @@ OpenVPN GUI is a Linux desktop client for managing OpenVPN connections. It provi
 
 1. Navigate to the project root directory:
    ```bash
-   cd /path/to/OpenVPN-Py
+   cd OpenVPN-Py
    ```
 2. Run the installation script with superuser privileges:
    ```bash
@@ -117,7 +117,7 @@ OpenVPN GUI ist ein Linux-Desktop-Client zur Verwaltung von OpenVPN-Verbindungen
 
 1. Wechseln Sie in das Projektverzeichnis:
    ```bash
-   cd /path/to/OpenVPN-Py
+   cd OpenVPN-Py
    ```
 2. Führen Sie das Installationsskript mit Root-Rechten aus:
    ```bash
