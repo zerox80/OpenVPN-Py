@@ -23,19 +23,24 @@ echo "=============================="
 # Variablen
 SERVICE_NAME="openvpn-gui"
 BIN_PATH="/usr/local/bin/${SERVICE_NAME}"
+HELPER_PATH="/usr/local/bin/${SERVICE_NAME}-helper"
 INSTALL_DIR="/usr/local/share/${SERVICE_NAME}"
 DESKTOP_FILE="/usr/share/applications/${SERVICE_NAME}.desktop"
-POLKIT_RULE="/etc/polkit-1/rules.d/50-openvpn-gui.rules"
+SUDOERS_FILE="/etc/sudoers.d/${SERVICE_NAME}-sudo"
 
 # Prozesse beenden
 echo "Beende laufende Prozesse..."
-pkill -f "openvpn-gui" 2>/dev/null || true
+pkill -f "${SERVICE_NAME}" 2>/dev/null || true
 pkill -f "python.*main.py" 2>/dev/null || true
 
-# Binärdatei entfernen
+# Binärdateien entfernen
 if [ -f "${BIN_PATH}" ]; then
-    echo "Entferne Programm..."
+    echo "Entferne Wrapper-Skript..."
     rm -v "${BIN_PATH}"
+fi
+if [ -f "${HELPER_PATH}" ]; then
+    echo "Entferne Helper-Skript..."
+    rm -v "${HELPER_PATH}"
 fi
 
 # Installationsverzeichnis entfernen
@@ -51,33 +56,16 @@ if [ -f "${DESKTOP_FILE}" ]; then
     update-desktop-database /usr/share/applications/ 2>/dev/null || true
 fi
 
-# Polkit-Regel entfernen
-if [ -f "${POLKIT_RULE}" ]; then
-    echo "Entferne Polkit-Regel..."
-    rm -v "${POLKIT_RULE}"
-    systemctl restart polkit
+# Sudoers-Regel entfernen
+if [ -f "${SUDOERS_FILE}" ]; then
+    echo "Entferne Sudoers-Regel..."
+    rm -v "${SUDOERS_FILE}"
 fi
-
-# Benutzer-Desktop-Einträge entfernen
-for USER_HOME in /home/*; do
-    if [ -d "$USER_HOME" ]; then
-        USER_DESKTOP="${USER_HOME}/.local/share/applications/${SERVICE_NAME}.desktop"
-        if [ -f "${USER_DESKTOP}" ]; then
-            echo "Entferne Desktop-Eintrag für ${USER_HOME}"
-            rm -v "${USER_DESKTOP}"
-        fi
-    fi
-done
 
 echo ""
 echo -e "${GREEN}Deinstallation abgeschlossen!${NC}"
 echo ""
 echo "Folgende Ressourcen wurden NICHT entfernt:"
-echo "  - VPN-Konfigurationsdateien: /etc/openvpn/client/"
-echo "  - Benutzer-Konfiguration: ~/.config/openvpn-gui/"
-echo "  - OpenVPN-Gruppe und Gruppenmitgliedschaften"
-echo ""
-echo "Um diese zu entfernen, führen Sie aus:"
-echo "  sudo rm -rf /etc/openvpn/client"
-echo "  rm -rf ~/.config/openvpn-gui"
-echo "  sudo groupdel openvpn"
+echo "  - Ihre VPN-Konfigurationsdateien"
+echo "  - Ihre Benutzer-Konfiguration unter ~/.config/openvpn-gui/"
+echo "  - Ihre gespeicherten Anmeldedaten im System-Schlüsselbund"
