@@ -1,10 +1,8 @@
 # /ui/control_panel.py
-
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel, QFrame
 from PyQt6.QtCore import pyqtSlot
 from PyQt6.QtGui import QFont
 import constants as C
-from translation import _
 
 class ControlPanel(QWidget):
     def __init__(self, parent=None):
@@ -13,23 +11,27 @@ class ControlPanel(QWidget):
 
     def init_ui(self):
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0,0,0,0)
 
         # Status Display
-        status_label_title = QLabel(_("Status"))
+        status_frame = QFrame()
+        status_frame.setFrameShape(QFrame.Shape.StyledPanel)
+        status_layout = QVBoxLayout(status_frame)
+        
+        status_label_title = QLabel()
         font = QFont()
         font.setBold(True)
         status_label_title.setFont(font)
-        self.status_label = QLabel(_("Disconnected"))
+        status_label_title.setText(self.tr("Status")) # Use tr()
         
-        status_frame = QFrame()
-        status_layout = QVBoxLayout(status_frame)
+        self.status_label = QLabel()
+        
         status_layout.addWidget(status_label_title)
         status_layout.addWidget(self.status_label)
-        status_frame.setFrameShape(QFrame.Shape.StyledPanel)
-
+        
         # Control Buttons
-        self.connect_button = QPushButton(_("Connect"))
-        self.disconnect_button = QPushButton(_("Disconnect"))
+        self.connect_button = QPushButton()
+        self.disconnect_button = QPushButton()
         
         layout.addWidget(status_frame)
         layout.addWidget(self.connect_button)
@@ -40,26 +42,38 @@ class ControlPanel(QWidget):
 
     @pyqtSlot(C.VpnState)
     def update_state(self, state: C.VpnState):
-        status_text = {
-            C.VpnState.DISCONNECTED: _("Disconnected"),
-            C.VpnState.CONNECTING: _("Connecting..."),
-            C.VpnState.CONNECTED: _("Connected"),
-            C.VpnState.DISCONNECTING: _("Disconnecting..."),
-            C.VpnState.ERROR: _("Error"),
-            C.VpnState.AUTH_FAILED: _("Authentication Failed"),
-            C.VpnState.NO_CONFIG_SELECTED: _("Select a configuration")
+        status_map = {
+            C.VpnState.DISCONNECTED: self.tr("Disconnected"),
+            C.VpnState.CONNECTING: self.tr("Connecting..."),
+            C.VpnState.CONNECTED: self.tr("Connected"),
+            C.VpnState.DISCONNECTING: self.tr("Disconnecting..."),
+            C.VpnState.ERROR: self.tr("Error"),
+            C.VpnState.AUTH_FAILED: self.tr("Authentication Failed"),
+            C.VpnState.NO_CONFIG_SELECTED: self.tr("Select a configuration")
         }
-        self.status_label.setText(status_text.get(state, _("Unknown")))
+        self.status_label.setText(status_map.get(state, self.tr("Unknown")))
+
+        # Update style based on state
+        if state == C.VpnState.CONNECTED:
+            self.status_label.setStyleSheet("color: green;")
+        elif state == C.VpnState.ERROR or state == C.VpnState.AUTH_FAILED:
+            self.status_label.setStyleSheet("color: red;")
+        else:
+            self.status_label.setStyleSheet("") # Reset to default color
+
+        can_connect = state in [C.VpnState.DISCONNECTED, C.VpnState.ERROR, C.VpnState.AUTH_FAILED]
+        has_selection = state != C.VpnState.NO_CONFIG_SELECTED
         
-        is_disconnected = state in [C.VpnState.DISCONNECTED, C.VpnState.ERROR, C.VpnState.AUTH_FAILED, C.VpnState.NO_CONFIG_SELECTED]
-        is_connecting = state == C.VpnState.CONNECTING
-        is_connected = state == C.VpnState.CONNECTED
-        
-        self.connect_button.setEnabled(is_disconnected)
-        self.disconnect_button.setEnabled(is_connected)
+        self.connect_button.setEnabled(can_connect and has_selection)
+        self.disconnect_button.setEnabled(state == C.VpnState.CONNECTED or state == C.VpnState.DISCONNECTING)
 
         # Update button text for better UX
-        if is_connecting:
-            self.connect_button.setText(_("Connecting..."))
+        if state == C.VpnState.CONNECTING:
+            self.connect_button.setText(self.tr("Connecting..."))
         else:
-            self.connect_button.setText(_("Connect"))
+            self.connect_button.setText(self.tr("Connect"))
+
+        if state == C.VpnState.DISCONNECTING:
+            self.disconnect_button.setText(self.tr("Disconnecting..."))
+        else:
+            self.disconnect_button.setText(self.tr("Disconnect"))

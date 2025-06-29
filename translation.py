@@ -1,16 +1,26 @@
-import os
-from PySide6.QtCore import QTranslator, QLocale, QLibraryInfo, QCoreApplication
+# translation.py
+import logging
+from PyQt6.QtCore import QTranslator, QLocale, QLibraryInfo, QCoreApplication
 
+logger = logging.getLogger(__name__)
 
-def install_translator(app_name):
+def install_translator(app_name: str) -> QTranslator:
+    """
+    Loads and installs a translator for the application.
+    Note: For translations to work, UI elements must use self.tr("Text").
+    """
     translator = QTranslator()
-    locale = QLocale.system().name()
+    locale = QLocale.system().name()  # e.g., "de_DE"
 
-    # Look for translation files in the resource system
-    # The path should match the alias in the .qrc file
-    if translator.load(f":/i18n/{app_name}_{locale}.qm"):
+    # The .qm files should be compiled and placed alongside the code,
+    # or in a resource file. Here we assume they are in an i18n subdirectory.
+    # Note: Adjust the path if using a resource system (e.g., ":/i18n/")
+    translation_path = f"i18n/{locale}.qm"
+    
+    if translator.load(translation_path):
         QCoreApplication.installTranslator(translator)
+        logger.info(f"Successfully loaded translation for locale {locale}")
     else:
-        print(f"Warning: Could not load translation for locale {locale}")
+        logger.warning(f"Could not load translation file from path: {translation_path}")
 
     return translator

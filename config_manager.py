@@ -1,15 +1,14 @@
+# config_manager.py
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List
 import logging
 
-from constants import Constants as C
+import constants as C
 
-# Logger einrichten
 logger = logging.getLogger(__name__)
 
-# Eigene Exception-Klassen für eine bessere Fehlerbehandlung
 class ConfigImportError(Exception):
     pass
 
@@ -23,75 +22,61 @@ class VpnConfig:
 
 class ConfigManager:
     def __init__(self):
-        # Liste aller Verzeichnisse, in denen nach Konfigurationen gesucht wird
-        self.config_dirs = [C.USER_CONFIGS_PATH] + C.SYSTEM_CONFIG_PATHS
-        self._ensure_user_config_dir_exists()
-        logger.info(f"ConfigManager initialisiert. Suchpfade: {self.config_dirs}")
-
-    def _ensure_user_config_dir_exists(self):
-        """Stellt sicher, dass das Benutzer-Konfigurationsverzeichnis existiert."""
-        try:
-            C.USER_CONFIGS_PATH.mkdir(parents=True, exist_ok=True)
-            logger.debug(f"Benutzer-Konfigurationsverzeichnis sichergestellt: {C.USER_CONFIGS_PATH}")
-        except OSError as e:
-            logger.error(f"Konnte Benutzer-Konfigurationsverzeichnis nicht erstellen: {e}")
-            # Hier könnte man eine Exception werfen, wenn das Verzeichnis kritisch ist.
+        # Search for configs in user dir and system dirs
+        self.config_dirs = [C.USER_CONFIGS_DIR] + C.SYSTEM_CONFIG_DIRS
+        logger.info(f"ConfigManager initialized. Search paths: {self.config_dirs}")
 
     def discover_configs(self) -> List[VpnConfig]:
-        """
-        Sucht in allen definierten Verzeichnissen nach .ovpn- und .conf-Dateien.
-        """
+        """Discovers .ovpn and .conf files in all defined directories."""
         discovered_configs = []
+        seen_names = set()
         for config_dir in self.config_dirs:
             if not config_dir.is_dir():
                 continue
             
-            # Suche nach .ovpn und .conf Dateien
             for extension in ["*.ovpn", "*.conf"]:
                 for config_file in config_dir.glob(extension):
-                    config = VpnConfig(name=config_file.stem, path=config_file)
-                    # Vermeide Duplikate, falls dieselbe Config in mehreren Pfaden liegt
-                    if config.name not in [c.name for c in discovered_configs]:
+                    config = VpnConfig(name=config_file.name, path=config_file)
+                    if config.name not in seen_names:
                         discovered_configs.append(config)
+                        seen_names.add(config.name)
         
-        # Sortiere die Liste alphabetisch nach dem Namen
         discovered_configs.sort(key=lambda x: x.name)
-        logger.info(f"{len(discovered_configs)} VPN-Konfigurationen gefunden.")
+        logger.info(f"{len(discovered_configs)} VPN configurations found.")
         return discovered_configs
 
     def import_config(self, source_path: str):
-        """
-        Kopiert eine ausgewählte Konfigurationsdatei in das Benutzerverzeichnis.
-        """
+        """Copies a selected configuration file to the user's config directory."""
         source = Path(source_path)
         if not source.is_file():
-            raise ConfigImportError(f"Quelldatei nicht gefunden: {source_path}")
+            raise ConfigImportError(f"Source file not found: {source_path}")
 
-        destination = C.USER_CONFIGS_PATH / source.name
+        destination = C.USER_CONFIGS_DIR / source.name
         if destination.exists():
-            raise ConfigExistsError(f"Eine Konfiguration mit dem Namen '{source.name}' existiert bereits.")
+            raise ConfigExistsError(f"A configuration named '{source.name}' already exists.")
 
         try:
             shutil.copy(source, destination)
-            logger.info(f"Konfiguration von '{source}' nach '{destination}' importiert.")
+            logger.info(f"Configuration imported from '{source}' to '{destination}'.")
         except IOError as e:
-            logger.error(f"Fehler beim Kopieren der Konfigurationsdatei: {e}")
-            raise ConfigImportError(f"Konnte Konfiguration nicht importieren: {e}")
+            logger.error(f"Error copying configuration file: {e}")
+            raise ConfigImportError(f"Could not import configuration: {e}")
 
     def delete_config(self, config: VpnConfig):
         """
-        Löscht eine Konfigurationsdatei aus dem Benutzerverzeichnis.
-        Löschen aus Systemverzeichnissen wird aus Sicherheitsgründen nicht unterstützt.
+        Deletes a configuration file from the user's directory.
+        Deletion from system directories is not supported for security reasons.
         """
-        if config.path.parent != C.USER_CONFIGS_PATH:
-            logger.warning(f"Löschen von System-Konfigurationen ist nicht erlaubt: {config.path}")
-            raise PermissionError("Nur Konfigurationen im Benutzerverzeichnis können gelöscht werden.")
+        # Ensure we are only deleting from the user's config directory
+        if not str(config.path).startswith(str(C.USER_CONFIGS_DIR)):
+            logger.warning(f"Attempt to delete non-user config denied: {config.path}")
+            raise PermissionError("Only configurations in the user directory can be deleted.")
         
         try:
             config.path.unlink()
-            logger.info(f"Konfiguration gelöscht: {config.path}")
+            logger.info(f"Configuration deleted: {config.path}")
         except FileNotFoundError:
-            logger.warning(f"Zu löschende Konfiguration wurde nicht gefunden (möglicherweise bereits gelöscht): {config.path}")
+            logger.warning(f"Config to be deleted was not found (already deleted?): {config.path}")
         except OSError as e:
-            logger.error(f"Fehler beim Löschen der Konfiguration '{config.path}': {e}")
+            logger.error(f"Error deleting configuration '{config.path}': {e}")
             raise

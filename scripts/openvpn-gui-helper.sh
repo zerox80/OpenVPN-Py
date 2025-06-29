@@ -1,120 +1,111 @@
 #!/bin/bash
-
-# Strict-Modus für mehr Sicherheit und bessere Fehlererkennung
+# Strict mode for more safety and better error detection
 set -euo pipefail
 
-# --- Konfiguration ---
-LOG_FILE="/var/log/openvpn-gui.log"
-OVPN_CONFIG_DIR="/etc/openvpn/client"
-
-# --- Hilfsfunktionen ---
-
-# Funktion zum Loggen von Nachrichten
+# --- Helper Functions ---
 log() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
+    # Logs to the log file provided as an argument to the script
+    local log_file_path="$1"
+    local message="$2"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - HELPER: ${message}" >> "$log_file_path"
 }
 
-# Funktion zur Fehlerbehandlung
 handle_error() {
+    # Since we can't be sure which log file to use, error to stderr
     local exit_code=$?
-    local error_message="ERROR: Zeile $1: Befehl schlug mit Exit-Code $exit_code fehl."
-    echo "$error_message" >&2 # Fehler nach stderr ausgeben
-    log "$error_message"
+    echo "ERROR: Line $1: Command failed with exit code $exit_code." >&2
     exit "$exit_code"
 }
 
-# Trap für Fehler einrichten
+# Setup error trap
 trap 'handle_error $LINENO' ERR
 
-# --- Hauptlogik ---
+# --- Main Logic ---
 
-# Überprüfen, ob das Skript mit Root-Rechten läuft
+# Check for root privileges
 if [[ $EUID -ne 0 ]]; then
-   echo "ERROR: Dieses Skript muss als root ausgeführt werden." >&2
+   echo "ERROR: This script must be run as root." >&2
    exit 1
 fi
 
-# Sicherstellen, dass die Log-Datei existiert und die richtigen Berechtigungen hat
-touch "$LOG_FILE"
-chown root:adm "$LOG_FILE"
-chmod 640 "$LOG_FILE"
-
-log "Helper-Skript gestartet mit Befehl: '$*'"
-
 COMMAND=$1
-shift || true # Fehler ignorieren, wenn keine weiteren Argumente vorhanden sind
+shift
 
 case "$COMMAND" in
     start)
-        CONFIG_NAME=$1
-        # Sicherheitsprüfung: Verhindern von Path-Traversal-Angriffen
-        if [[ "$CONFIG_NAME" != "$(basename "$CONFIG_NAME")" || -z "$CONFIG_NAME" ]]; then
-            echo "ERROR: Ungültiger Konfigurationsname '$CONFIG_NAME'." >&2
-            log "ERROR: Ungültiger Konfigurationsname '$CONFIG_NAME'."
-            exit 1
-        fi
-        
-        CONFIG_PATH="$OVPN_CONFIG_DIR/$CONFIG_NAME"
-        
+        CONFIG_PATH="$1"
+        LOG_PATH="$2"
+
+        log "$LOG_PATH" "Start command received for config: $CONFIG_PATH"
+
         if [ ! -f "$CONFIG_PATH" ]; then
-            echo "ERROR: Konfigurationsdatei nicht gefunden: $CONFIG_PATH." >&2
-            log "ERROR: Konfigurationsdatei nicht gefunden: $CONFIG_PATH."
+            log "$LOG_PATH" "ERROR: Config file not found: $CONFIG_PATH"
+            echo "ERROR: Config file not found: $CONFIG_PATH" >&2
             exit 1
         fi
-        
-        log "Starte OpenVPN-Dienst mit Konfiguration: $CONFIG_NAME"
-        # --auth-nocache verhindert das Cachen des Passworts im Speicher
-        systemd-run --unit "openvpn-gui-client@${CONFIG_NAME%.conf}" \
-                    --description "OpenVPN GUI client for ${CONFIG_NAME%.conf}" \
-                    /usr/sbin/openvpn --config "$CONFIG_PATH" --auth-nocache
-        log "OpenVPN-Dienst für $CONFIG_NAME gestartet."
+
+        # Use the config filename (without extension) for the service name
+        CONFIG_NAME=$(basename "$CONFIG_PATH")
+        SERVICE_UNIT_NAME="openvpn-gui-client@${CONFIG_NAME%.*}"
+
+        # Read username and password from stdin and store in a temporary file
+        AUTH_FILE=$(mktemp)
+        chmod 600 "$AUTH_FILE"
+        read -r username
+        read -r password
+        echo "$username" > "$AUTH_FILE"
+        echo "$password" >> "$AUTH_FILE"
+
+        # Cleanup trap to remove the auth file on exit
+        trap 'rm -f "$AUTH_FILE"' EXIT
+
+        log "$LOG_PATH" "Starting OpenVPN service '$SERVICE_UNIT_NAME'..."
+
+        # Use systemd-run to start openvpn as a transient service.
+        # This is clean and manages the process well.
+        # The service will automatically log to the journal, but --log redirects it.
+        systemd-run --unit "$SERVICE_UNIT_NAME" \
+                    --description "OpenVPN GUI client for $CONFIG_NAME" \
+                    /usr/sbin/openvpn \
+                        --config "$CONFIG_PATH" \
+                        --auth-user-pass "$AUTH_FILE" \
+                        --auth-nocache \
+                        --log "$LOG_PATH"
+
+        log "$LOG_PATH" "systemd-run command issued for $CONFIG_NAME."
         ;;
+
     stop)
-        CONFIG_NAME=$1
-        # Sicherheitsprüfung
-        if [[ "$CONFIG_NAME" != "$(basename "$CONFIG_NAME")" || -z "$CONFIG_NAME" ]]; then
-            echo "ERROR: Ungültiger Konfigurationsname '$CONFIG_NAME'." >&2
-            log "ERROR: Ungültiger Konfigurationsname '$CONFIG_NAME'."
-            exit 1
-        fi
-        
-        SERVICE_NAME="openvpn-gui-client@${CONFIG_NAME%.conf}.service"
-        log "Stoppe OpenVPN-Dienst: $SERVICE_NAME"
-        
-        if systemctl is-active --quiet "$SERVICE_NAME"; then
-            systemctl stop "$SERVICE_NAME"
-            log "Dienst $SERVICE_NAME erfolgreich gestoppt."
+        CONFIG_NAME="$1" # Expects just the filename, e.g., "my-vpn.ovpn"
+        LOG_PATH="$2"
+        SERVICE_UNIT_NAME="openvpn-gui-client@${CONFIG_NAME%.*}.service"
+
+        log "$LOG_PATH" "Stop command received for service: $SERVICE_UNIT_NAME"
+
+        if systemctl is-active --quiet "$SERVICE_UNIT_NAME"; then
+            systemctl stop "$SERVICE_UNIT_NAME"
+            log "$LOG_PATH" "Service '$SERVICE_UNIT_NAME' stopped successfully."
         else
-            echo "INFO: Dienst $SERVICE_NAME lief nicht." >&2
-            log "INFO: Dienst $SERVICE_NAME lief nicht, kein Stoppen erforderlich."
+            log "$LOG_PATH" "Service '$SERVICE_UNIT_NAME' was not running."
+            echo "INFO: Service was not running." >&2
         fi
         ;;
+
     status)
-        CONFIG_NAME=$1
-        # Sicherheitsprüfung
-        if [[ "$CONFIG_NAME" != "$(basename "$CONFIG_NAME")" || -z "$CONFIG_NAME" ]]; then
-            # Still, aber nicht fehlerhaft beenden, wenn kein Name gegeben ist (z.B. beim Start)
-            exit 1
-        fi
-        
-        SERVICE_NAME="openvpn-gui-client@${CONFIG_NAME%.conf}.service"
-        
-        if systemctl is-active --quiet "$SERVICE_NAME"; then
+        CONFIG_NAME="$1" # Expects just the filename
+        SERVICE_UNIT_NAME="openvpn-gui-client@${CONFIG_NAME%.*}.service"
+
+        if systemctl is-active --quiet "$SERVICE_UNIT_NAME"; then
             echo "connected"
-        elif systemctl is-failed --quiet "$SERVICE_NAME"; then
+        elif systemctl is-failed --quiet "$SERVICE_UNIT_NAME"; then
             echo "error"
         else
             echo "disconnected"
         fi
         ;;
-    check)
-        # Dieser Befehl dient nur zur Überprüfung, ob das Skript erfolgreich ausgeführt werden kann.
-        log "Check-Befehl erfolgreich ausgeführt."
-        echo "OK"
-        ;;
+
     *)
-        echo "ERROR: Ungültiger Befehl '$COMMAND'." >&2
-        log "ERROR: Ungültiger Befehl '$COMMAND'."
+        echo "ERROR: Invalid command '$COMMAND'." >&2
         exit 1
         ;;
 esac
