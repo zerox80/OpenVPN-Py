@@ -1,87 +1,108 @@
 #!/bin/bash
-# ============================================================================
-# OpenVPN GUI Helper Script
-# Führt privilegierte Operationen sicher aus.
-# WIRD VOM INSTALLATIONSSKRIPT IN /usr/local/bin/openvpn-gui-helper ERSTELLT
-# ============================================================================
-set -euo pipefail
 
-# --- Konfiguration ---
-# Erlaubte Pfade für VPN-Konfigurationen. Muss mit install.sh übereinstimmen.
-ALLOWED_CONFIG_DIRS=("/etc/openvpn/client" "/home/*/.config/openvpn-gui" "/home/*/.config/openvpn")
-OPENVPN_PATH=$(command -v openvpn)
-KILL_PATH=$(command -v kill)
+# /scripts/openvpn-gui-helper.sh
 
-# --- Hilfsfunktionen ---
-log_error() {
-    echo "HELPER-ERROR: $1" >&2
+# --- Configuration ---
+LOG_FILE="/tmp/openvpn-gui-helper.log"
+# Whitelisted directories for OpenVPN configs
+ALLOWED_CONFIG_DIRS=(
+    "/etc/openvpn/client"
+    # User-specific path is now handled dynamically
+)
+
+# --- Functions ---
+
+# Function to log messages
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
 }
 
-# --- Aktionen ---
-ACTION="${1:-}"
-shift
+# Function to check if a config path is in a whitelisted directory
+is_path_allowed() {
+    local config_file_path=$1
+    local config_dir
 
-case "$ACTION" in
+    # Resolve the real path to prevent traversal attacks (e.g., ../)
+    config_dir=$(dirname "$(realpath "$config_file_path")")
+
+    # Get the home directory of the user who invoked sudo
+    if [[ -n "$SUDO_USER" ]]; then
+        local target_home
+        target_home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+        local user_config_dir_allowed="$target_home/.config/openvpn-gui/configs"
+        ALLOWED_CONFIG_DIRS+=("$user_config_dir_allowed")
+    else
+        log "WARNING: SUDO_USER not set. User-specific config path will not be allowed."
+    fi
+
+    for allowed_dir in "${ALLOWED_CONFIG_DIRS[@]}"; do
+        if [[ "$config_dir" == "$allowed_dir" ]]; then
+            log "Path $config_file_path is in the allowed directory: $allowed_dir."
+            return 0
+        fi
+    done
+
+    log "ERROR: Path $config_file_path is NOT in any allowed directory."
+    return 1
+}
+
+# --- Main Logic ---
+
+# Ensure log file exists and has correct permissions
+touch "$LOG_FILE"
+chmod 644 "$LOG_FILE"
+
+log "Helper script started. Command: $1, Config: $2"
+
+case "$1" in
     start)
-        CONFIG_PATH_ARG="--config"
-        CONFIG_PATH=""
-
-        # Finde den Wert des --config Arguments
-        while [ "$#" -gt 0 ]; do
-            if [ "$1" = "$CONFIG_PATH_ARG" ]; then
-                CONFIG_PATH="$2"
-                break
-            fi
-            shift
-        done
-        
-        # Sicherheitsprüfung 1: Stellen Sie sicher, dass ein Konfigurationspfad vorhanden ist
-        if [ -z "$CONFIG_PATH" ]; then
-            log_error "Kein Konfigurationspfad angegeben."
+        CONFIG_FILE=$2
+        if [[ -z "$CONFIG_FILE" ]]; then
+            log "ERROR: No config file provided for start command."
             exit 1
         fi
 
-        # Sicherheitsprüfung 2: Überprüfen Sie, ob der Pfad in der Whitelist ist
-        path_allowed=false
-        for dir in "${ALLOWED_CONFIG_DIRS[@]}"; do
-            # Verwenden Sie case für Mustervergleich, um Wildcards zu ermöglichen
-            case "$CONFIG_PATH" in
-                $dir/*) path_allowed=true; break ;;
-            esac
-        done
-
-        if [ "$path_allowed" = false ]; then
-            log_error "Zugriff auf Konfigurationspfad '$CONFIG_PATH' verweigert."
+        if ! is_path_allowed "$CONFIG_FILE"; then
+            echo "Error: The specified configuration path is not allowed."
             exit 1
         fi
 
-        # Führen Sie OpenVPN aus.
-        exec "$OPENVPN_PATH" "$@"
+        log "Starting OpenVPN with config: $CONFIG_FILE"
+        # Use --daemon to run in the background. OpenVPN will manage its own PID file.
+        # Use --log to redirect OpenVPN logs
+        # Use --auth-user-pass with a file if credentials are provided via stdin
+        openvpn --config "$CONFIG_FILE" --daemon --log /tmp/openvpn_gui_log.log --auth-nocache
+        log "OpenVPN start command issued."
         ;;
 
     stop)
-        PGID="$1"
-
-        # Sicherheitsprüfung: Stellen Sie sicher, dass PGID eine positive Ganzzahl ist
-        if ! [[ "$PGID" =~ ^[0-9]+$ ]] || [ "$PGID" -le 1 ]; then
-            log_error "Ungültige oder unsichere Prozessgruppen-ID (PGID) '$PGID' angegeben."
+        PID_TO_KILL=$2
+        if [[ -z "$PID_TO_KILL" ]]; then
+            log "ERROR: No PID provided for stop command."
             exit 1
         fi
 
-        # Zuerst versuchen, sauber zu beenden
-        if "$KILL_PATH" -SIGTERM -- -"$PGID" 2>/dev/null; then
-            # Warte kurz, um dem Prozess Zeit zum Beenden zu geben
-            sleep 1
-        fi
-
-        # Wenn die Prozessgruppe noch existiert, erzwinge das Beenden
-        if pgrep -g "$PGID" > /dev/null; then
-             "$KILL_PATH" -SIGKILL -- -"$PGID"
+        # Security check: Ensure the PID actually belongs to an openvpn process
+        if ps -p "$PID_TO_KILL" -o comm= | grep -q "openvpn"; then
+            log "Stopping OpenVPN process with PID: $PID_TO_KILL"
+            kill "$PID_TO_KILL"
+            # Cleanup DNS settings managed by systemd-resolved
+            if command -v resolvectl &> /dev/null; then
+                log "Reverting DNS settings for tun0 interface."
+                resolvectl revert tun0
+            fi
+            log "OpenVPN process $PID_TO_KILL stopped."
+        else
+            log "ERROR: PID $PID_TO_KILL does not belong to an OpenVPN process. Not killing."
+            exit 1
         fi
         ;;
 
     *)
-        log_error "Unbekannte oder keine Aktion angegeben."
+        log "ERROR: Invalid command '$1'. Use 'start' or 'stop'."
+        echo "Invalid command. Use 'start <config_path>' or 'stop <pid>'."
         exit 1
         ;;
 esac
+
+exit 0

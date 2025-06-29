@@ -1,79 +1,80 @@
-import json
-import logging
+# credentials_manager.py
 import hashlib
-import keyring
-from keyring.errors import NoKeyringError
-import constants as C
+import logging
+from pathlib import Path
+from typing import Optional, Tuple
+
+try:
+    import keyring
+    from keyring.errors import NoKeyringError
+except ImportError:
+    keyring = None
+    NoKeyringError = Exception
+
+from constants import Constants as C
 
 logger = logging.getLogger(__name__)
 
+
 class CredentialsManager:
     def __init__(self):
-        """Verwaltet Anmeldedaten sicher über den System-Schlüsselbund."""
-        self.service_name = C.APP_TITLE
-        try:
-            # Testen, ob ein Backend verfügbar ist
-            keyring.get_keyring()
-            self.keyring_available = True
-            logger.info("System-Schlüsselbund (Secret Service) erfolgreich initialisiert.")
-        except NoKeyringError:
-            self.keyring_available = False
-            logger.warning("Kein System-Schlüsselbund gefunden. Das Speichern von Anmeldedaten ist nicht möglich.")
-
-    def _get_config_key(self, config_path):
-        """Generiert einen stabilen Schlüssel für den angegebenen Konfigurationspfad."""
-        return hashlib.sha256(str(config_path).encode('utf-8')).hexdigest()
-
-    def save_credentials(self, config_path, username, password):
-        """Speichert Anmeldedaten im System-Schlüsselbund."""
+        self.keyring_available = keyring is not None
         if not self.keyring_available:
-            logger.error("Speichern nicht möglich, da kein Schlüsselbund verfügbar ist.")
-            return
+            logger.warning("`keyring` library is not installed. Passwords will not be saved.")
 
-        try:
-            config_key = self._get_config_key(config_path)
-            # Speichere Username und Passwort als JSON-String
-            credentials_json = json.dumps({'username': username, 'password': password})
-            keyring.set_password(self.service_name, config_key, credentials_json)
-            logger.info(f"Anmeldedaten für Konfiguration {config_path} sicher im Schlüsselbund gespeichert.")
-        except Exception as e:
-            logger.error(f"Fehler beim Speichern der Anmeldedaten im Schlüsselbund: {e}")
+    def _get_config_key(self, config_path: Path) -> str:
+        """Creates a stable service name for keyring based on the config path."""
+        # Use a hash to avoid storing raw paths in keyring service names
+        # and to ensure a consistent length.
+        return hashlib.sha256(str(config_path.resolve()).encode()).hexdigest()
 
-    def get_credentials(self, config_path):
-        """Lädt gespeicherte Anmeldedaten aus dem System-Schlüsselbund."""
+    def get_credentials(self, config_path: Path) -> Tuple[Optional[str], Optional[str]]:
+        """Retrieves username and password for a given config path from the keyring."""
         if not self.keyring_available:
             return None, None
-            
-        try:
-            config_key = self._get_config_key(config_path)
-            credentials_json = keyring.get_password(self.service_name, config_key)
-            
-            if credentials_json:
-                creds = json.loads(credentials_json)
-                logger.info(f"Anmeldedaten für {config_path} aus dem Schlüsselbund geladen.")
-                return creds.get('username'), creds.get('password')
-                
-        except Exception as e:
-            logger.error(f"Fehler beim Laden der Anmeldedaten aus dem Schlüsselbund: {e}")
-        
-        return None, None
 
-    def delete_credentials(self, config_path):
-        """Löscht gespeicherte Anmeldedaten aus dem System-Schlüsselbund."""
-        if not self.keyring_available:
-            return False
-            
+        service_name = f"{C.APP_NAME}-{self._get_config_key(config_path)}"
         try:
-            config_key = self._get_config_key(config_path)
-            # Prüfen, ob Passwort existiert, bevor man es löscht
-            if keyring.get_password(self.service_name, config_key) is not None:
-                keyring.delete_password(self.service_name, config_key)
-                logger.info(f"Anmeldedaten für {config_path} aus dem Schlüsselbund gelöscht.")
-                return True
-            else:
-                logger.info(f"Keine Anmeldedaten für {config_path} im Schlüsselbund gefunden.")
-                return False
+            username = keyring.get_password(service_name, "username")
+            password = keyring.get_password(service_name, "password")
+            if username or password:
+                logger.info(f"Retrieved credentials for {config_path.name}")
+            return username, password
+        except NoKeyringError:
+            logger.warning("No keyring backend found. Cannot retrieve credentials.")
+            self.keyring_available = False
+            return None, None
         except Exception as e:
-            logger.error(f"Fehler beim Löschen der Anmeldedaten aus dem Schlüsselbund: {e}")
-        
-        return False
+            logger.exception(f"Failed to retrieve credentials: {e}")
+            return None, None
+
+    def save_credentials(self, config_path: Path, username: str, password: str) -> None:
+        """Saves username and password to the keyring."""
+        if not self.keyring_available:
+            return
+
+        service_name = f"{C.APP_NAME}-{self._get_config_key(config_path)}"
+        try:
+            keyring.set_password(service_name, "username", username)
+            keyring.set_password(service_name, "password", password)
+            logger.info(f"Saved credentials for {config_path.name}")
+        except NoKeyringError:
+            logger.warning("No keyring backend found. Cannot save credentials.")
+            self.keyring_available = False
+        except Exception as e:
+            logger.exception(f"Failed to save credentials: {e}")
+
+    def delete_credentials(self, config_path: Path) -> None:
+        """Deletes credentials for a given config path from the keyring."""
+        if not self.keyring_available:
+            return
+
+        service_name = f"{C.APP_NAME}-{self._get_config_key(config_path)}"
+        try:
+            keyring.delete_password(service_name, "username")
+            keyring.delete_password(service_name, "password")
+            logger.info(f"Deleted credentials for {config_path.name}")
+        except NoKeyringError:
+            pass  # Nothing to delete
+        except Exception as e:
+            logger.exception(f"Failed to delete credentials: {e}")

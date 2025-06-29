@@ -1,183 +1,138 @@
-import os
+# /vpn_manager.py
+
 import subprocess
-import tempfile
-import logging
-import threading
 import time
-from pathlib import Path
-from PyQt6.QtCore import QObject, pyqtSignal
-import shutil
+import logging
+from PyQt6.QtCore import QObject, pyqtSignal, QTimer
 import constants as C
 
-logger = logging.getLogger(__name__)
-
 class VPNManager(QObject):
-    status_changed = pyqtSignal(str)
-    output_received = pyqtSignal(str)
-    error_occurred = pyqtSignal(str)
-
-    def __init__(self):
+    """
+    Manages the OpenVPN connection lifecycle.
+    This object is intended to be moved to a separate thread.
+    """
+    state_changed = pyqtSignal(C.VpnState)
+    log_received = pyqtSignal(str)
+    connection_terminated = pyqtSignal()
+    
+    def __init__(self, credentials_manager):
         super().__init__()
+        self.state = C.VpnState.DISCONNECTED
         self.process = None
-        self.monitor_thread = None
-        self.auth_file = None
-        self.process_group_id = None
-        
-        self._lock = threading.Lock()
-        self._state = C.VPN_STATE_DISCONNECTED
-        self._shutdown_event = threading.Event()
+        self.credentials_manager = credentials_manager
+        self.current_config_path = None
+        self.log_file_path = "/tmp/openvpn_gui_log.log" # Path used in helper script
 
-    def get_state(self):
-        with self._lock:
-            return self._state
+        # Timer to periodically check the connection status
+        self.status_timer = QTimer(self)
+        self.status_timer.timeout.connect(self.check_connection_status)
 
-    def _set_state(self, new_state):
-        with self._lock:
-            if self._state == new_state:
-                return
-            self._state = new_state
-            logger.info(f"VPN state changed to: {new_state}")
-            self.status_changed.emit(new_state)
+    @property
+    def is_running(self):
+        return self.process is not None and self.process.poll() is None
 
-    def connect(self, config_path, username=None, password=None):
-        """Stellt VPN-Verbindung über das sichere Helper-Skript her."""
-        if self.get_state() != C.VPN_STATE_DISCONNECTED:
-            logger.warning(f"Verbindung kann nicht hergestellt werden, aktueller Status: {self.get_state()}")
+    def _set_state(self, new_state: C.VpnState):
+        if self.state != new_state:
+            self.state = new_state
+            self.state_changed.emit(self.state)
+            logging.info(f"VPN state changed to: {new_state.name}")
+
+    def connect(self, config_path: str):
+        if self.is_running:
+            self.log_received.emit("Already connected or a process is running.")
             return
 
-        self._set_state(C.VPN_STATE_CONNECTING)
-        self._shutdown_event.clear()
-
+        self.current_config_path = config_path
+        self._set_state(C.VpnState.CONNECTING)
+        self.log_received.emit(f"Connecting to {config_path}...")
+        
         try:
-            self.auth_file = self._create_auth_file(username, password) if username and password else None
-            cmd = self._build_command(config_path, self.auth_file)
+            # Clear previous log file
+            with open(self.log_file_path, "w") as f:
+                f.write("--- Log started ---\n")
+
+            command = ["sudo", "-A", str(C.HELPER_SCRIPT_PATH), "start", config_path]
             
-            logger.info(f"Führe Befehl aus: {' '.join(cmd)}")
             self.process = subprocess.Popen(
-                cmd,
+                command,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                universal_newlines=True,
-                encoding='utf-8',
-                errors='replace',
-                bufsize=1,
-                start_new_session=True
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding='utf-8'
             )
             
-            self.process_group_id = os.getpgid(self.process.pid)
-            logger.info(f"Prozess gestartet mit PID: {self.process.pid}, PGID: {self.process_group_id}")
+            # The process starts, now we monitor it
+            self.status_timer.start(1000) # Check every second
 
-            self.monitor_thread = threading.Thread(target=self._monitor_output, daemon=True)
-            self.monitor_thread.start()
-
+        except FileNotFoundError:
+            self.log_received.emit("Error: Helper script not found or sudo is not installed.")
+            self._set_state(C.VpnState.ERROR)
+            self.process = None
         except Exception as e:
-            logger.error(f"Verbindungsfehler: {e}", exc_info=True)
-            self._cleanup_after_error(str(e))
-
-    def _build_command(self, config_path, auth_file):
-        """Baut das OpenVPN-Kommando für das Helper-Skript."""
-        cmd = ['sudo', C.HELPER_SCRIPT_PATH, 'start']
-        cmd.extend(['--config', str(config_path), '--auth-nocache', '--verb', '3'])
-        if auth_file:
-            cmd.extend(['--auth-user-pass', str(auth_file)])
-
-        # Erzwinge IPv4-Protokolle
-        try:
-            with open(config_path, 'r') as f:
-                content = f.read().lower()
-                if 'proto udp' in content: cmd.extend(['--proto', 'udp4'])
-                elif 'proto tcp' in content: cmd.extend(['--proto', 'tcp4-client'])
-        except Exception: pass
-
-        cmd.extend([
-            '--script-security', '2',
-            '--up', C.UPDATE_RESOLV_CONF_PATH,
-            '--down', C.UPDATE_RESOLV_CONF_PATH,
-            '--down-pre'
-        ])
-        return cmd
+            self.log_received.emit(f"An unexpected error occurred: {e}")
+            self._set_state(C.VpnState.ERROR)
+            self.process = None
 
     def disconnect(self):
-        """Trennt die VPN-Verbindung sicher über das Helper-Skript."""
-        if self.get_state() not in [C.VPN_STATE_CONNECTED, C.VPN_STATE_CONNECTING]:
+        if not self.is_running:
+            self.log_received.emit("Not connected.")
             return
-            
-        logger.info("Trenne VPN-Verbindung...")
-        self._set_state(C.VPN_STATE_DISCONNECTING)
-        self._shutdown_event.set()
 
+        self._set_state(C.VpnState.DISCONNECTING)
+        self.log_received.emit("Disconnecting...")
+        
         try:
-            if self.process_group_id:
-                logger.info(f"Sende Stopp-Befehl an Helper für PGID {self.process_group_id}")
-                cmd = ['sudo', C.HELPER_SCRIPT_PATH, 'stop', str(self.process_group_id)]
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-                if result.returncode != 0:
-                    logger.error(f"Helper-Skript meldet Fehler beim Stoppen: {result.stderr.strip()}")
+            pid = self.process.pid
+            command = ["sudo", "-A", str(C.HELPER_SCRIPT_PATH), "stop", str(pid)]
+            subprocess.run(command, check=True, capture_output=True, text=True)
             
-            if self.monitor_thread and self.monitor_thread.is_alive():
-                self.monitor_thread.join(timeout=5.0)
+            # Ensure process is terminated
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+            
+            self.log_received.emit("Disconnected successfully.")
 
+        except subprocess.CalledProcessError as e:
+            self.log_received.emit(f"Error during disconnect: {e.stderr}")
+            self._set_state(C.VpnState.ERROR)
         except Exception as e:
-            logger.error(f"Fehler beim Trennen der Verbindung: {e}", exc_info=True)
+            self.log_received.emit(f"An unexpected error occurred during disconnect: {e}")
+            self._set_state(C.VpnState.ERROR)
         finally:
-            self._cleanup()
-            self._set_state(C.VPN_STATE_DISCONNECTED)
-            logger.info("VPN-Verbindung getrennt.")
-
-    def _monitor_output(self):
-        """Überwacht die OpenVPN-Ausgabe in einem separaten Thread."""
-        for line in iter(self.process.stdout.readline, ''):
-            if self._shutdown_event.is_set(): break
-            
-            line = line.strip()
-            if not line: continue
-            self.output_received.emit(line)
-
-            if "Initialization Sequence Completed" in line:
-                self._set_state(C.VPN_STATE_CONNECTED)
-            elif "AUTH_FAILED" in line:
-                self._set_state(C.VPN_STATE_AUTH_FAILED)
-                break
-        
-        self.process.wait()
-        self._cleanup()
-        # Setze finalen Status, falls nicht explizit getrennt wurde
-        if not self._shutdown_event.is_set():
-            self._set_state(C.VPN_STATE_DISCONNECTED)
-
-    def _cleanup(self):
-        """Räumt Ressourcen auf."""
-        if self.auth_file:
-            try: Path(self.auth_file).unlink(missing_ok=True)
-            except Exception as e: logger.error(f"Fehler beim Löschen der Auth-Datei: {e}")
-            self.auth_file = None
-        if self.process:
-            self.process.stdout.close()
-            if self.process.poll() is None: self.process.kill()
             self.process = None
-        self.process_group_id = None
+            self._set_state(C.VpnState.DISCONNECTED)
+            self.status_timer.stop()
+            self.connection_terminated.emit()
+
+    def check_connection_status(self):
+        if not self.is_running:
+            # Process terminated unexpectedly
+            self.log_received.emit("Connection process terminated unexpectedly.")
+            self._set_state(C.VpnState.ERROR)
+            self.status_timer.stop()
+            self.connection_terminated.emit()
+            return
         
-    def _cleanup_after_error(self, error_message):
-        """Spezifisches Cleanup bei Verbindungsfehler."""
-        self._cleanup()
-        self.error_occurred.emit(error_message)
-        self._set_state(C.VPN_STATE_ERROR)
-
-    def _create_auth_file(self, username, password):
-        """Erstellt sichere temporäre Auth-Datei."""
+        # Read the OpenVPN log file for status
         try:
-            fd, path = tempfile.mkstemp(prefix='ovpn_auth_', text=True)
-            with os.fdopen(fd, 'w') as f: f.write(f"{username}\n{password}")
-            os.chmod(path, 0o600)
-            return Path(path)
+            with open(self.log_file_path, "r") as f:
+                log_content = f.read()
+            
+            # Very basic log checks
+            if "Initialization Sequence Completed" in log_content:
+                if self.state != C.VpnState.CONNECTED:
+                    self._set_state(C.VpnState.CONNECTED)
+                    self.log_received.emit("Connection established successfully.")
+            elif "AUTH_FAILED" in log_content:
+                self.log_received.emit("Authentication failed. Please check your credentials.")
+                self._set_state(C.VpnState.AUTH_FAILED)
+                self.disconnect() # Clean up the failed attempt
+        except FileNotFoundError:
+            # Log file might not be created yet, that's fine.
+            pass
         except Exception as e:
-            logger.error(f"Fehler beim Erstellen der Auth-Datei: {e}")
-            raise
-
-    def check_requirements(self):
-        """Prüft, ob alle Voraussetzungen erfüllt sind."""
-        issues = []
-        if not shutil.which('openvpn'): issues.append("OpenVPN ist nicht installiert oder nicht im PATH.")
-        if not shutil.which('sudo'): issues.append("sudo ist nicht installiert oder nicht im PATH.")
-        if not Path(C.UPDATE_RESOLV_CONF_PATH).exists(): issues.append(f"DNS-Update-Skript fehlt: {C.UPDATE_RESOLV_CONF_PATH}")
-        return issues
+            self.log_received.emit(f"Error reading log file: {e}")
