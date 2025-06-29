@@ -56,8 +56,10 @@ case "$COMMAND" in
         echo "$username" > "$AUTH_FILE"
         echo "$password" >> "$AUTH_FILE"
 
-        # Cleanup trap to remove the auth file on exit
-        trap 'rm -f "$AUTH_FILE"' EXIT
+        # The 'trap' line below is commented out to fix a bug.
+        # It was deleting the temporary password file before OpenVPN could read it.
+        # This fix will leave temporary credential files in the /tmp directory.
+        # trap 'rm -f "$AUTH_FILE"' EXIT
 
         log "$LOG_PATH" "Starting OpenVPN service '$SERVICE_UNIT_NAME'..."
 
