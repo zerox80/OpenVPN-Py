@@ -1,110 +1,120 @@
 #!/bin/bash
 
-# Rigorose Fehlerprüfung
+# Strict-Modus für mehr Sicherheit und bessere Fehlererkennung
 set -euo pipefail
 
-# Logging-Funktion
+# --- Konfiguration ---
+LOG_FILE="/var/log/openvpn-gui.log"
+OVPN_CONFIG_DIR="/etc/openvpn/client"
+
+# --- Hilfsfunktionen ---
+
+# Funktion zum Loggen von Nachrichten
 log() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - HELPER: $1" >> "/tmp/openvpn-gui-helper.log"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
 }
 
-# Funktion zur Überprüfung, ob ein Pfad sicher ist
-is_path_allowed() {
-    local path_to_check=$1
-    local allowed_dir
-    local real_path
-
-    # Verhindert Path Traversal Attacken
-    if [[ "$path_to_check" == *".."* ]]; then
-        log "ERROR: Path contains '..', access denied: $path_to_check"
-        return 1
-    fi
-
-    # Sicherstellen, dass die Datei im erlaubten Verzeichnis liegt
-    real_path=$(realpath "$path_to_check")
-
-    for allowed_dir in "/etc/openvpn" "$HOME/.config/openvpn-py/configs"; do
-        if [[ "$(realpath "$allowed_dir")" == "$(dirname "$real_path")" ]]; then
-            log "Path is allowed: $real_path"
-            return 0
-        fi
-    done
-
-    log "ERROR: Path is not in an allowed directory: $real_path"
-    return 1
+# Funktion zur Fehlerbehandlung
+handle_error() {
+    local exit_code=$?
+    local error_message="ERROR: Zeile $1: Befehl schlug mit Exit-Code $exit_code fehl."
+    echo "$error_message" >&2 # Fehler nach stderr ausgeben
+    log "$error_message"
+    exit "$exit_code"
 }
 
-ACTION=$1
-shift # Verschiebt die Argumente nach links ($2 wird zu $1 usw.)
+# Trap für Fehler einrichten
+trap 'handle_error $LINENO' ERR
 
-log "Action: $ACTION"
+# --- Hauptlogik ---
 
-case "$ACTION" in
+# Überprüfen, ob das Skript mit Root-Rechten läuft
+if [[ $EUID -ne 0 ]]; then
+   echo "ERROR: Dieses Skript muss als root ausgeführt werden." >&2
+   exit 1
+fi
+
+# Sicherstellen, dass die Log-Datei existiert und die richtigen Berechtigungen hat
+touch "$LOG_FILE"
+chown root:adm "$LOG_FILE"
+chmod 640 "$LOG_FILE"
+
+log "Helper-Skript gestartet mit Befehl: '$*'"
+
+COMMAND=$1
+shift || true # Fehler ignorieren, wenn keine weiteren Argumente vorhanden sind
+
+case "$COMMAND" in
     start)
-        CONFIG_FILE=$1
-        LOG_PATH=$2
-        PID_DIR=$(dirname "$LOG_PATH") # Leitet das PID-Verzeichnis vom Log-Pfad ab
-
-        if ! is_path_allowed "$CONFIG_FILE"; then
+        CONFIG_NAME=$1
+        # Sicherheitsprüfung: Verhindern von Path-Traversal-Angriffen
+        if [[ "$CONFIG_NAME" != "$(basename "$CONFIG_NAME")" || -z "$CONFIG_NAME" ]]; then
+            echo "ERROR: Ungültiger Konfigurationsname '$CONFIG_NAME'." >&2
+            log "ERROR: Ungültiger Konfigurationsname '$CONFIG_NAME'."
             exit 1
         fi
         
-        # Erstellt das Laufzeitverzeichnis, falls es nicht existiert
-        mkdir -p "$PID_DIR"
+        CONFIG_PATH="$OVPN_CONFIG_DIR/$CONFIG_NAME"
         
-        # Eindeutige PID-Datei für diesen Prozess
-        PID_FILE=$(mktemp "$PID_DIR/openvpn.pid.XXXXXX")
+        if [ ! -f "$CONFIG_PATH" ]; then
+            echo "ERROR: Konfigurationsdatei nicht gefunden: $CONFIG_PATH." >&2
+            log "ERROR: Konfigurationsdatei nicht gefunden: $CONFIG_PATH."
+            exit 1
+        fi
         
-        log "Starting OpenVPN with config: $CONFIG_FILE"
-        log "Log will be written to: $LOG_PATH"
-        log "PID will be written to: $PID_FILE"
-
-        # Startet OpenVPN als Daemon
-        # --auth-nocache: Verhindert das Caching von Passwörtern im Speicher
-        # --writepid: Schreibt die Prozess-ID in eine Datei
-        openvpn --config "$CONFIG_FILE" \
-                --daemon \
-                --writepid "$PID_FILE" \
-                --log "$LOG_PATH" \
-                --auth-user-pass \
-                --auth-nocache
-
-        # Gibt den Pfad zur PID-Datei an die Python-Anwendung zurück
-        echo "$PID_FILE"
+        log "Starte OpenVPN-Dienst mit Konfiguration: $CONFIG_NAME"
+        # --auth-nocache verhindert das Cachen des Passworts im Speicher
+        systemd-run --unit "openvpn-gui-client@${CONFIG_NAME%.conf}" \
+                    --description "OpenVPN GUI client for ${CONFIG_NAME%.conf}" \
+                    /usr/sbin/openvpn --config "$CONFIG_PATH" --auth-nocache
+        log "OpenVPN-Dienst für $CONFIG_NAME gestartet."
         ;;
-
     stop)
-        PID_FILE=$1
-        
-        # Sicherheitsprüfung: Stelle sicher, dass die PID-Datei im erwarteten Verzeichnis liegt
-        PID_DIR=$(realpath "$(dirname "$PID_FILE")")
-        ALLOWED_PID_DIR=$(realpath "$(dirname "$2")") # $2 ist der Log-Pfad, zur Verifizierung
-
-        if [[ "$PID_DIR" != "$ALLOWED_PID_DIR" ]] || [[ "$PID_FILE" == *".."* ]]; then
-            log "ERROR: Invalid PID file path provided: $PID_FILE"
+        CONFIG_NAME=$1
+        # Sicherheitsprüfung
+        if [[ "$CONFIG_NAME" != "$(basename "$CONFIG_NAME")" || -z "$CONFIG_NAME" ]]; then
+            echo "ERROR: Ungültiger Konfigurationsname '$CONFIG_NAME'." >&2
+            log "ERROR: Ungültiger Konfigurationsname '$CONFIG_NAME'."
             exit 1
         fi
-
-        if [[ -f "$PID_FILE" ]]; then
-            PID_TO_KILL=$(cat "$PID_FILE")
-            log "Stopping OpenVPN process with PID $PID_TO_KILL from file $PID_FILE"
-            # Überprüfen, ob der Prozess noch existiert und ein 'openvpn' Prozess ist
-            if ps -p "$PID_TO_KILL" -o comm= | grep -q "openvpn"; then
-                kill "$PID_TO_KILL"
-                log "Process $PID_TO_KILL killed."
-            else
-                log "Process $PID_TO_KILL not found or not an OpenVPN process."
-            fi
-            rm -f "$PID_FILE"
-            log "PID file $PID_FILE removed."
+        
+        SERVICE_NAME="openvpn-gui-client@${CONFIG_NAME%.conf}.service"
+        log "Stoppe OpenVPN-Dienst: $SERVICE_NAME"
+        
+        if systemctl is-active --quiet "$SERVICE_NAME"; then
+            systemctl stop "$SERVICE_NAME"
+            log "Dienst $SERVICE_NAME erfolgreich gestoppt."
         else
-            log "ERROR: PID file not found: $PID_FILE"
+            echo "INFO: Dienst $SERVICE_NAME lief nicht." >&2
+            log "INFO: Dienst $SERVICE_NAME lief nicht, kein Stoppen erforderlich."
         fi
         ;;
-
+    status)
+        CONFIG_NAME=$1
+        # Sicherheitsprüfung
+        if [[ "$CONFIG_NAME" != "$(basename "$CONFIG_NAME")" || -z "$CONFIG_NAME" ]]; then
+            # Still, aber nicht fehlerhaft beenden, wenn kein Name gegeben ist (z.B. beim Start)
+            exit 1
+        fi
+        
+        SERVICE_NAME="openvpn-gui-client@${CONFIG_NAME%.conf}.service"
+        
+        if systemctl is-active --quiet "$SERVICE_NAME"; then
+            echo "connected"
+        elif systemctl is-failed --quiet "$SERVICE_NAME"; then
+            echo "error"
+        else
+            echo "disconnected"
+        fi
+        ;;
+    check)
+        # Dieser Befehl dient nur zur Überprüfung, ob das Skript erfolgreich ausgeführt werden kann.
+        log "Check-Befehl erfolgreich ausgeführt."
+        echo "OK"
+        ;;
     *)
-        log "ERROR: Unknown action '$ACTION'"
-        echo "Unknown action: $ACTION" >&2
+        echo "ERROR: Ungültiger Befehl '$COMMAND'." >&2
+        log "ERROR: Ungültiger Befehl '$COMMAND'."
         exit 1
         ;;
 esac
