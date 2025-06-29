@@ -1,169 +1,122 @@
-# OpenVPN GUI
+# OpenVPN-Py
 
-## English
+A simple Python-based GUI for OpenVPN, built with PyQt6. This application provides an easy way to manage and connect to OpenVPN configurations.
 
-### Overview
+## Features
 
-OpenVPN GUI is a Linux desktop client for managing OpenVPN connections. It provides a simple and intuitive graphical interface for importing, connecting, and disconnecting VPN configurations, with system tray integration, encrypted credential storage, and leak protection.
+- **Import Configurations**: Easily import your `.ovpn` files.
+- **Secure Credential Storage**: Uses the system's keyring (`secret-service` on Linux) to securely store your VPN passwords.
+- **Connect/Disconnect**: Start and stop VPN connections with a single click.
+- **System Tray Icon**: A tray icon indicates the current connection status (Disconnected, Connecting, Connected, Error).
+- **Log Viewer**: View real-time logs from OpenVPN for troubleshooting.
+- **Leak Protection**: Supports standard OpenVPN directives for DNS and IPv6 leak protection (`update-resolv-conf` and `block-outside-dns`).
+- **Internationalization**: Available in English and German.
 
-### Features
-
-- Import and manage multiple OpenVPN configuration files (`.ovpn`, `.conf`)
-- Securely store VPN credentials encrypted on disk
-- Connect and disconnect VPN sessions with a click
-- System tray icon with real-time status and notifications
-- Built-in log viewer to track connection events
-- DNS leak protection via `update-resolv-conf`
-- IPv6 leak prevention using `ip6tables`
-- Optional systemd user service for automatic startup
-- Cross-desktop integration with a `.desktop` entry
-
-### Requirements
-
-- Linux distribution (Ubuntu tested)
-- Python 3.8 or higher
-- OpenVPN and `sudo` installed and in `PATH`
-- DNS update script at `/etc/openvpn/update-resolv-conf` (provided by `openvpn-systemd-resolved`)
-- User in the `openvpn` group to manage VPN without password prompts
-- Python packages: `PyQt6`, `cryptography` (install via `pip install -r requirements.txt`)
-
-### Installation
-
-1. Navigate to the project root directory:
-   ```bash
-   cd OpenVPN-Py
-   ```
-2. Run the installation script with superuser privileges:
-   ```bash
-   sudo ./scripts/install.sh
-   ```
-3. (Optional) Enable the systemd user service:
-   ```bash
-   sudo ./scripts/install.sh --with-service
-   ```
-4. Log out and log back in to apply group membership changes (user must be in the `openvpn` group).
-
-### Usage
-
-- Launch the application via your desktop menu (OpenVPN GUI) or command line:
-  ```bash
-  openvpn-gui
-  ```
-- In the main window:
-  1. Import `.ovpn`/`.conf` files using the "Import Configuration" button
-  2. Select a configuration from the list
-  3. Click "Connect" to start the VPN session
-  4. Enter credentials when prompted and choose whether to save them
-  5. View real-time logs in the log viewer
-- Use the system tray icon for quick connect/disconnect and status notifications.
-
-### Configuration
-
-- System-wide configurations: place `.ovpn`/`.conf` files in `/etc/openvpn/client/`
-- User configurations: place files in `~/.config/openvpn/`
-- Ensure each configuration file contains:
-  ```text
-  script-security 2
-  up /etc/openvpn/update-resolv-conf
-  down /etc/openvpn/update-resolv-conf
-  ```
-
-### Uninstallation
-
-Run the uninstall script with superuser privileges:
-```bash
-sudo ./scripts/uninstall.sh
-```
-This removes installed files and desktop entries, but preserves VPN configurations and user data under `~/.config/openvpn-gui/`.
-
-### Contributing
-
-Contributions are welcome! Please open an issue or submit a pull request on the repository.
-
-### License
-
-GPLv3
 ---
 
-## Deutsch
+## Requirements
 
-### Übersicht
+### 1. System Dependencies
 
-OpenVPN GUI ist ein Linux-Desktop-Client zur Verwaltung von OpenVPN-Verbindungen. Es bietet eine einfache grafische Oberfläche zum Importieren, Verbinden und Trennen von VPN-Konfigurationen mit Systemtray-Integration, verschlüsselter Speicherung von Zugangsdaten und Leckschutz.
+- **OpenVPN**: The OpenVPN client must be installed.
 
-### Funktionen
+  ```bash
+  # On Debian/Ubuntu
+  sudo apt-get update
+  sudo apt-get install openvpn
+  ```
 
-- Import und Verwaltung mehrerer OpenVPN-Konfigurationsdateien (`.ovpn`, `.conf`)
-- Sichere, verschlüsselte Speicherung von VPN-Zugangsdaten
-- Ein-Klick-Verbindung und -Trennung von VPN-Sitzungen
-- Systemtray-Symbol mit Echtzeit-Status und Benachrichtigungen
-- Integrierter Log-Viewer zur Überwachung von Verbindungsereignissen
-- DNS-Leckschutz über `update-resolv-conf`
-- IPv6-Leckschutz mit `ip6tables`
-- Optionale systemd-Benutzerdienste für automatischen Start
-- Desktop-Integration mit `.desktop`-Eintrag
+- **Python**: Python 3.8+ and `pip`.
+- **PyQt6**: The GUI is built with PyQt6. The installation script will attempt to install it.
+- **Keyring**: For secure password storage. The installation script will attempt to install it.
+- **qt6-tools** (Optional but Recommended): For compiling translation files.
 
-### Voraussetzungen
+  ```bash
+  # On Debian/Ubuntu
+  sudo apt-get install qt6-tools-dev
+  ```
 
-- Linux-Distribution (getestet unter Ubuntu)
-- Python 3.8 oder höher
-- OpenVPN und `sudo` installiert und im `PATH`
-- DNS-Update-Skript unter `/etc/openvpn/update-resolv-conf` (bereitgestellt von `openvpn-systemd-resolved`)
-- Benutzer in der Gruppe `openvpn`, um VPN ohne Passwortabfrage zu verwalten
-- Python-Pakete: `PyQt6`, `cryptography` (installieren über `pip install -r requirements.txt`)
+### 2. User Group
 
-### Installation
+For the application to manage OpenVPN connections, the user running the GUI must be a member of the `openvpn` group.
 
-1. Wechseln Sie in das Projektverzeichnis:
+```bash
+# Add your user to the 'openvpn' group
+sudo usermod -aG openvpn $USER
+```
+
+**Important**: You need to log out and log back in for this change to take effect.
+
+---
+
+## Installation
+
+1. **Clone the repository:**
+
    ```bash
+   git clone https://github.com/your-username/OpenVPN-Py.git
    cd OpenVPN-Py
    ```
-2. Führen Sie das Installationsskript mit Root-Rechten aus:
+
+2. **Run the install script:**
+
+   The script will copy files to system directories and set up necessary permissions. It must be run with `sudo`.
+
    ```bash
    sudo ./scripts/install.sh
    ```
-3. (Optional) Aktivieren Sie den systemd-Benutzerdienst:
-   ```bash
-   sudo ./scripts/install.sh --with-service
-   ```
-4. Melden Sie sich ab und erneut an, damit die Gruppenmitgliedschaft wirksam wird (Benutzer muss in der Gruppe `openvpn` sein).
 
-### Nutzung
+   The script will:
 
-- Starten Sie die Anwendung über das Startmenü (OpenVPN GUI) oder per Kommandozeile:
-  ```bash
-  openvpn-gui
-  ```
-- Im Hauptfenster:
-  1. Importieren Sie `.ovpn`/`.conf` Dateien mit "Konfiguration importieren"
-  2. Wählen Sie eine Konfiguration aus der Liste aus
-  3. Klicken Sie auf "Verbinden", um die VPN-Sitzung zu starten
-  4. Geben Sie Anmeldedaten ein und wählen Sie Speicheroption
-  5. Verfolgen Sie die Verbindung in Echtzeit im Log-Viewer
-- Verwenden Sie das Tray-Symbol für Schnellaktionen und Statusmeldungen.
+   - Install Python dependencies (`PyQt6`, `keyring`) via `pip`.
+   - Copy application files to `/usr/local/share/openvpn-py`.
+   - Create a launcher at `/usr/local/bin/openvpn-py`.
+   - Create a `.desktop` file for your application menu.
+   - Create a `sudoers` rule to allow the app to run OpenVPN without a password prompt.
 
-### Konfiguration
+---
 
-- Systemweite Konfigurationen: Legen Sie `.ovpn`/`.conf` Dateien in `/etc/openvpn/client/` ab
-- Benutzerkonfigurationen: Legen Sie Dateien in `~/.config/openvpn/` ab
-- Jede Konfigurationsdatei muss enthalten:
-  ```text
-  script-security 2
-  up /etc/openvpn/update-resolv-conf
-  down /etc/openvpn/update-resolv-conf
-  ```
+## Usage
 
-### Deinstallation
+1. Launch the application from your system's application menu ("OpenVPN-Py").
+2. **Import a Config**: Click "Import" and select your `.ovpn` configuration file.
+3. **Select a Config**: Choose the desired configuration from the list.
+4. **Connect**: Click the "Connect" button. You may be prompted for your sudo password and VPN password the first time. You can choose to save the VPN password securely in your system's keyring.
+5. **Disconnect**: Click the "Disconnect" button to terminate the connection.
 
-Führen Sie das Uninstall-Skript mit Root-Rechten aus:
+---
+
+## Configuration for Leak Protection
+
+To ensure DNS and IPv6 leaks are prevented, make sure your `.ovpn` files contain the following lines. This script relies on OpenVPN's native capabilities to manage routes and DNS.
+
+```
+# Example lines to add to your .ovpn file
+# For DNS leak protection
+up /etc/openvpn/update-resolv-conf
+down /etc/openvpn/update-resolv-conf
+
+# For blocking DNS servers on non-VPN interfaces
+block-outside-dns
+
+# To prevent IPv6 leaks if the VPN is IPv4-only
+pull-filter ignore "route-ipv6"
+pull-filter ignore "ifconfig-ipv6"
+```
+
+---
+
+## Uninstallation
+
+To remove the application and all its components from your system, run the `uninstall.sh` script with `sudo`.
+
 ```bash
+cd OpenVPN-Py # Navigate back to the cloned directory
 sudo ./scripts/uninstall.sh
 ```
-Hierdurch werden installierte Dateien und Desktop-Einträge entfernt, VPN-Konfigurationen und Benutzerdaten in `~/.config/openvpn-gui/` bleiben erhalten.
 
-### Mitwirken
+**Note**: The uninstaller will not remove your personal configuration files, which are stored in `~/.config/openvpn-py`. You can remove them manually if desired.
 
-Beiträge, Fehlerberichte und Feature-Anfragen sind willkommen. Bitte öffnen Sie ein Issue oder senden Sie einen Pull Request.
-
-### Lizenz
-GPLv3
+```bash
+rm -rf ~/.config/openvpn-py
+```

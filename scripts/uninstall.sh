@@ -1,71 +1,76 @@
 #!/bin/bash
 set -euo pipefail
 
-# ============================================================================
-# Uninstall Script for OpenVPN GUI
-# ============================================================================
+# Define installation paths to remove
+INSTALL_DIR="/usr/local/share/openvpn-py"
+BIN_DIR="/usr/local/bin"
+APP_NAME="openvpn-py"
+HELPER_SCRIPT_NAME="openvpn-gui-helper.sh"
+DESKTOP_ENTRY_NAME="openvpn-py.desktop"
+SUDOERS_FILE_NAME="openvpn-py-sudoers"
 
-# Farben
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
-
-# Root-Check
-if [[ $EUID -ne 0 ]]; then
-    echo -e "${RED}[ERROR]${NC} Dieses Script muss mit sudo ausgeführt werden"
-    exit 1
+# Check for root privileges
+if [ "$(id -u)" -ne 0 ]; then
+  echo "This script must be run as root. Please use 'sudo'."
+  exit 1
 fi
 
-echo -e "${YELLOW}OpenVPN GUI Deinstallation${NC}"
-echo "=============================="
+echo "Starting OpenVPN-Py uninstallation..."
 
-# Variablen
-SERVICE_NAME="openvpn-gui"
-BIN_PATH="/usr/local/bin/${SERVICE_NAME}"
-HELPER_PATH="/usr/local/bin/${SERVICE_NAME}-helper"
-INSTALL_DIR="/usr/local/share/${SERVICE_NAME}"
-DESKTOP_FILE="/usr/share/applications/${SERVICE_NAME}.desktop"
-SUDOERS_FILE="/etc/sudoers.d/${SERVICE_NAME}-sudo"
-
-# Prozesse beenden
-echo "Beende laufende Prozesse..."
-pkill -f "${SERVICE_NAME}" 2>/dev/null || true
-pkill -f "python.*main.py" 2>/dev/null || true
-
-# Binärdateien entfernen
-if [ -f "${BIN_PATH}" ]; then
-    echo "Entferne Wrapper-Skript..."
-    rm -v "${BIN_PATH}"
-fi
-if [ -f "${HELPER_PATH}" ]; then
-    echo "Entferne Helper-Skript..."
-    rm -v "${HELPER_PATH}"
+# --- Stop any running VPN connection managed by the helper ---
+# Find the PID and kill it gracefully
+HELPER_PATH="$BIN_DIR/$HELPER_SCRIPT_NAME"
+if [ -L "$HELPER_PATH" ] && command -v "$HELPER_PATH" &> /dev/null; then
+    echo "Attempting to stop any active OpenVPN connection..."
+    "$HELPER_PATH" stop &> /dev/null || true # Ignore errors if not running
 fi
 
-# Installationsverzeichnis entfernen
-if [ -d "${INSTALL_DIR}" ]; then
-    echo "Entferne Installationsverzeichnis..."
-    rm -rv "${INSTALL_DIR}"
+
+# --- Remove sudoers file ---
+SUDOERS_FILE="/etc/sudoers.d/$SUDOERS_FILE_NAME"
+if [ -f "$SUDOERS_FILE" ]; then
+    echo "Removing sudoers file: $SUDOERS_FILE"
+    rm -f "$SUDOERS_FILE"
+else
+    echo "Sudoers file not found, skipping."
 fi
 
-# Desktop-Einträge entfernen
-if [ -f "${DESKTOP_FILE}" ]; then
-    echo "Entferne Desktop-Eintrag..."
-    rm -v "${DESKTOP_FILE}"
-    update-desktop-database /usr/share/applications/ 2>/dev/null || true
+# --- Remove .desktop file ---
+DESKTOP_FILE="/usr/share/applications/$DESKTOP_ENTRY_NAME"
+if [ -f "$DESKTOP_FILE" ]; then
+    echo "Removing .desktop entry: $DESKTOP_FILE"
+    rm -f "$DESKTOP_FILE"
+else
+    echo ".desktop entry not found, skipping."
 fi
 
-# Sudoers-Regel entfernen
-if [ -f "${SUDOERS_FILE}" ]; then
-    echo "Entferne Sudoers-Regel..."
-    rm -v "${SUDOERS_FILE}"
+# --- Remove binaries and symlinks ---
+LAUNCHER_FILE="$BIN_DIR/$APP_NAME"
+if [ -f "$LAUNCHER_FILE" ]; then
+    echo "Removing launcher: $LAUNCHER_FILE"
+    rm -f "$LAUNCHER_FILE"
+else
+    echo "Launcher not found, skipping."
+fi
+
+HELPER_SYMLINK="$BIN_DIR/$HELPER_SCRIPT_NAME"
+if [ -L "$HELPER_SYMLINK" ]; then
+    echo "Removing helper script symlink: $HELPER_SYMLINK"
+    rm -f "$HELPER_SYMLINK"
+else
+    echo "Helper script symlink not found, skipping."
+fi
+
+# --- Remove installation directory ---
+if [ -d "$INSTALL_DIR" ]; then
+    echo "Removing installation directory: $INSTALL_DIR"
+    rm -rf "$INSTALL_DIR"
+else
+    echo "Installation directory not found, skipping."
 fi
 
 echo ""
-echo -e "${GREEN}Deinstallation abgeschlossen!${NC}"
-echo ""
-echo "Folgende Ressourcen wurden NICHT entfernt:"
-echo "  - Ihre VPN-Konfigurationsdateien"
-echo "  - Ihre Benutzer-Konfiguration unter ~/.config/openvpn-gui/"
-echo "  - Ihre gespeicherten Anmeldedaten im System-Schlüsselbund"
+echo "Uninstallation complete."
+echo "NOTE: User-specific configuration files in ~/.config/openvpn-py have not been removed."
+
+exit 0

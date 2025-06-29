@@ -1,87 +1,100 @@
 #!/bin/bash
-
-# Stellt sicher, dass das Skript bei Fehlern abbricht
 set -euo pipefail
 
-# Installationsverzeichnis in ~/.config/openvpn-py
-TARGET_DIR="$HOME/.config/openvpn-py"
-SOURCE_DIR=$(dirname "$(dirname "$(realpath "$0")")")
-TARGET_USER=$(whoami)
+# Define installation paths
+INSTALL_DIR="/usr/local/share/openvpn-py"
+BIN_DIR="/usr/local/bin"
+APP_NAME="openvpn-py"
+HELPER_SCRIPT_NAME="openvpn-gui-helper.sh"
+DESKTOP_ENTRY_NAME="openvpn-py.desktop"
+SUDOERS_FILE_NAME="openvpn-py-sudoers"
+ICON_NAME="openvpn-py.png"
 
-echo "Starting installation for OpenVPN-Py..."
+# Check for root privileges
+if [ "$(id -u)" -ne 0 ]; then
+  echo "This script must be run as root. Please use 'sudo'."
+  exit 1
+fi
 
-# Verzeichnisse erstellen
-echo "Creating directories in $TARGET_DIR..."
-mkdir -p "$TARGET_DIR/scripts"
-mkdir -p "$TARGET_DIR/configs"
-mkdir -p "$TARGET_DIR/ui"
-mkdir -p "$TARGET_DIR/i18n"
+echo "Starting OpenVPN-Py installation..."
 
-# Kopieren der Projektdateien
+# --- Create directories ---
+echo "Creating installation directories in $INSTALL_DIR..."
+mkdir -p "$INSTALL_DIR"
+mkdir -p "$INSTALL_DIR/ui"
+mkdir -p "$INSTALL_DIR/scripts"
+mkdir -p "$INSTALL_DIR/i18n"
+mkdir -p "$INSTALL_DIR/icons"
+
+# --- Copy application files ---
 echo "Copying application files..."
-rsync -a --delete \
-    --exclude 'scripts/' \
-    --exclude '.git/' \
-    --exclude '.idea/' \
-    --exclude '__pycache__/' \
-    --exclude '*.pyc' \
-    --exclude '*.md' \
-    "$SOURCE_DIR/" "$TARGET_DIR/"
+# Use parent directory of the script's location
+SCRIPT_PARENT_DIR=$(dirname "$(dirname "$(realpath "$0")")")
 
-# Kopieren der Skripte
-cp "$SOURCE_DIR/scripts/openvpn-gui-helper.sh" "$TARGET_DIR/scripts/"
-chmod +x "$TARGET_DIR/scripts/openvpn-gui-helper.sh"
-echo "Scripts copied and made executable."
+cp "$SCRIPT_PARENT_DIR"/*.py "$INSTALL_DIR/"
+cp "$SCRIPT_PARENT_DIR"/ui/*.py "$INSTALL_DIR/ui/"
+cp "$SCRIPT_PARENT_DIR"/scripts/$HELPER_SCRIPT_NAME "$INSTALL_DIR/scripts/"
+cp "$SCRIPT_PARENT_DIR"/i18n/*.ts "$INSTALL_DIR/i18n/"
+cp "$SCRIPT_PARENT_DIR"/icons/$ICON_NAME "$INSTALL_DIR/icons/"
 
-# Übersetzungen kompilieren
-echo "Compiling translations..."
-"$SOURCE_DIR/scripts/update_translations.sh"
-lrelease "$TARGET_DIR/i18n/de.ts" -qm "$TARGET_DIR/i18n/de.qm"
-lrelease "$TARGET_DIR/i18n/en.ts" -qm "$TARGET_DIR/i18n/en.qm"
-echo "Translations compiled."
-
-
-# Erstellen der .desktop-Datei für das Anwendungsmenü
-DESKTOP_ENTRY_DIR="$HOME/.local/share/applications"
-mkdir -p "$DESKTOP_ENTRY_DIR"
-DESKTOP_FILE="$DESKTOP_ENTRY_DIR/openvpn-py.desktop"
-
-echo "Creating .desktop file at $DESKTOP_FILE..."
-
-cat > "$DESKTOP_FILE" << EOL
-[Desktop Entry]
-Name=OpenVPN-Py
-Comment=A simple OpenVPN GUI Client
-Exec=python3 $TARGET_DIR/main.py
-Icon=$SOURCE_DIR/icon.svg
-Terminal=false
-Type=Application
-Categories=Network;
-EOL
-
-echo ".desktop file created."
-
-# Einrichten der sudo-Rechte für das Helper-Skript
-HELPER_SCRIPT_PATH="$TARGET_DIR/scripts/openvpn-gui-helper.sh"
-SUDOERS_FILE="/etc/sudoers.d/openvpn-py-helper"
-
-echo "Setting up sudo permissions..."
-echo "This requires sudo privileges."
-
-# Die Regel erlaubt dem Benutzer, das Skript ohne Passwort auszuführen.
-# Die Parameter werden durch das Python-Programm validiert.
-# WICHTIG: Die neue Regel für `stop` akzeptiert nun einen Pfad als Argument.
-SUDOERS_CONTENT="$TARGET_USER ALL=(root) NOPASSWD: $HELPER_SCRIPT_PATH start *, $HELPER_SCRIPT_PATH stop *"
-
-if command -v pkexec >/dev/null; then
-    pkexec bash -c "echo '$SUDOERS_CONTENT' > $SUDOERS_FILE && chmod 0440 $SUDOERS_FILE"
+# --- Compile translations ---
+echo "Compiling translation files..."
+# Check if lrelease is available
+if ! command -v lrelease &> /dev/null; then
+    echo "Warning: 'lrelease' command not found. Cannot compile translations."
+    echo "Please install 'qt6-tools' or equivalent for your distribution."
 else
-    sudo bash -c "echo '$SUDOERS_CONTENT' > $SUDOERS_FILE && chmod 0440 $SUDOERS_FILE"
+    lrelease "$INSTALL_DIR/i18n/de.ts" -qm "$INSTALL_DIR/i18n/de.qm"
 fi
 
 
+# --- Create executable launcher ---
+echo "Creating launcher script in $BIN_DIR/$APP_NAME..."
+cat << EOF > "$BIN_DIR/$APP_NAME"
+#!/bin/bash
+# Launcher for OpenVPN-Py
+cd "$INSTALL_DIR"
+python3 main.py "\$@"
+EOF
+chmod +x "$BIN_DIR/$APP_NAME"
+
+# --- Create helper script symlink ---
+echo "Creating symlink for helper script in $BIN_DIR/$HELPER_SCRIPT_NAME..."
+ln -sf "$INSTALL_DIR/scripts/$HELPER_SCRIPT_NAME" "$BIN_DIR/$HELPER_SCRIPT_NAME"
+
+# --- Create .desktop file for application menu ---
+echo "Creating .desktop entry..."
+cat << EOF > "/usr/share/applications/$DESKTOP_ENTRY_NAME"
+[Desktop Entry]
+Version=1.0
+Name=OpenVPN-Py
+Comment=A Python GUI for OpenVPN
+Exec=$BIN_DIR/$APP_NAME
+Icon=$INSTALL_DIR/icons/$ICON_NAME
+Terminal=false
+Type=Application
+Categories=Network;
+EOF
+
+# --- Set up sudoers rule for the helper script ---
+echo "Setting up sudoers rule..."
+SUDOERS_FILE="/etc/sudoers.d/$SUDOERS_FILE_NAME"
+echo "# Allows users in the 'openvpn' group to run the helper script without a password" > "$SUDOERS_FILE"
+echo "%openvpn ALL=(ALL) NOPASSWD: $BIN_DIR/$HELPER_SCRIPT_NAME *" >> "$SUDOERS_FILE"
+# Set correct permissions for the sudoers file
+chmod 0440 "$SUDOERS_FILE"
+
 echo ""
-echo "----------------------------------------"
+echo "--------------------------------------------------------"
 echo "Installation complete!"
-echo "You can now start OpenVPN-Py from your application menu."
-echo "----------------------------------------"
+echo ""
+echo "IMPORTANT: For this application to work, the current user"
+echo "must be a member of the 'openvpn' group."
+echo "You can add the user with the command:"
+echo "  sudo usermod -aG openvpn \$USER"
+echo ""
+echo "You may need to log out and log back in for the group"
+echo "changes to take effect."
+echo "--------------------------------------------------------"
+
+exit 0

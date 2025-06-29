@@ -1,190 +1,160 @@
 import sys
-from pathlib import Path
-
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
-                             QSystemTrayIcon, QMenu, QMessageBox)
+import subprocess  # <-- BEHOBEN: Fehlender Import hinzugefügt
+from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QMessageBox
 from PyQt6.QtGui import QIcon, QAction
-from PyQt6.QtCore import QThread
-
-import constants as C
+from constants import VpnState, APP_ICON
 from ui.config_list import ConfigList
 from ui.control_panel import ControlPanel
 from ui.log_viewer import LogViewer
-from vpn_manager import VPNManager
+from vpn_manager import VpnManager
 from config_manager import ConfigManager
-from credentials_dialog import CredentialsDialog
-import credentials_manager
-from translation import install_translator
+from translation import set_language, _
+from main_window import MainWindow
 
-class MainWindow(QMainWindow):
-    def __init__(self, app):
+
+class OpenVpnPy(MainWindow):
+    """
+    Main application class for OpenVPN-Py.
+    """
+
+    def __init__(self):
         super().__init__()
-        self.app = app
+        set_language()
+
         self.config_manager = ConfigManager()
-        self.vpn_manager = VPNManager()
+        self.vpn_manager = VpnManager()
 
         self.init_ui()
         self.create_tray_icon()
         self.connect_signals()
-        
-        self.on_state_changed(C.VpnState.NO_CONFIG)
-        self.config_list.load_configs()
-        
-        if not self.check_sudo_permissions():
-            QMessageBox.critical(
-                self,
-                _("Permission Error"),
-                _("Sudo permissions for the helper script are not configured correctly. "
-                  "Please run the install.sh script or configure it manually.")
-            )
-            sys.exit(1)
+        self.check_sudo_permissions()
 
     def init_ui(self):
-        self.setWindowTitle(C.APP_NAME)
-        self.setWindowIcon(QIcon("icon.svg"))
-        self.setGeometry(100, 100, 800, 600)
-
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        layout = QVBoxLayout(central_widget)
-
+        """
+        Initializes the user interface.
+        """
         self.config_list = ConfigList(self.config_manager)
         self.control_panel = ControlPanel()
         self.log_viewer = LogViewer()
 
-        layout.addWidget(self.config_list)
-        layout.addWidget(self.control_panel)
-        layout.addWidget(self.log_viewer)
+        self.add_widget_to_left_layout(self.config_list)
+        self.add_widget_to_left_layout(self.control_panel)
+        self.add_widget_to_right_layout(self.log_viewer)
 
     def create_tray_icon(self):
+        """
+        Creates the system tray icon and its context menu.
+        """
         self.tray_icon = QSystemTrayIcon(self)
-        self.update_tray_icon(C.VpnState.DISCONNECTED)
+        self.update_tray_icon(VpnState.DISCONNECTED)
+
+        show_action = QAction(_("Show"), self)
+        quit_action = QAction(_("Quit"), self)
+        show_action.triggered.connect(self.show)
+        quit_action.triggered.connect(self.quit_app)
 
         tray_menu = QMenu()
-        self.show_action = QAction(_("Show"), self)
-        self.show_action.triggered.connect(self.show)
-        tray_menu.addAction(self.show_action)
-
-        self.quit_action = QAction(_("Quit"), self)
-        self.quit_action.triggered.connect(self.quit_application)
-        tray_menu.addAction(self.quit_action)
-
+        tray_menu.addAction(show_action)
+        tray_menu.addAction(quit_action)
         self.tray_icon.setContextMenu(tray_menu)
         self.tray_icon.show()
 
     def connect_signals(self):
-        self.control_panel.connect_button.clicked.connect(self.connect_vpn)
-        self.control_panel.disconnect_button.clicked.connect(self.disconnect_vpn)
-        self.config_list.config_selected.connect(self.on_config_selected)
-
-        self.vpn_manager.state_changed.connect(self.on_state_changed)
-        self.vpn_manager.log_received.connect(self.log_viewer.add_log)
-        self.vpn_manager.connection_terminated.connect(self.on_connection_terminated)
-        
+        """
+        Connects signals from managers to the UI slots.
+        """
+        self.vpn_manager.state_changed.connect(self.update_ui_state)
+        self.vpn_manager.log_received.connect(self.log_viewer.append_log)
+        self.control_panel.connect_button.clicked.connect(self.toggle_connection)
+        self.config_list.import_button.clicked.connect(self.import_config)
+        self.config_list.delete_button.clicked.connect(self.delete_config)
         self.tray_icon.activated.connect(self.on_tray_icon_activated)
 
-    def on_config_selected(self, config_path: str):
-        self.current_config_path = config_path
-        self.log_viewer.clear_log()
-        self.log_viewer.add_log(_(f"Selected configuration: {config_path}"))
-        if self.vpn_manager.state not in [C.VpnState.CONNECTING, C.VpnState.CONNECTED]:
-            self.on_state_changed(C.VpnState.DISCONNECTED)
-
-    def connect_vpn(self):
-        if not hasattr(self, 'current_config_path') or not self.current_config_path:
-            QMessageBox.warning(self, _("Warning"), _("Please select a configuration file first."))
-            return
-            
-        if not Path(self.current_config_path).exists():
-            QMessageBox.critical(self, _("Error"), _("The selected configuration file does not exist anymore."))
-            self.config_list.load_configs() # Refresh the list
-            return
-
-        self.get_credentials_and_connect()
-
-    def get_credentials_and_connect(self):
-        username, password = credentials_manager.get_credentials(self.current_config_path)
-
-        if username is None or password is None:
-            keyring_available = credentials_manager.is_keyring_available()
-            dialog = CredentialsDialog(self, keyring_available)
-            if dialog.exec():
-                username, password, save = dialog.get_credentials()
-                if save:
-                    credentials_manager.save_credentials(self.current_config_path, username, password)
+    def toggle_connection(self):
+        """
+        Toggles the VPN connection state.
+        """
+        if self.vpn_manager.state in [VpnState.DISCONNECTED, VpnState.ERROR]:
+            config_name = self.config_list.get_selected_config()
+            if config_name:
+                self.vpn_manager.connect_vpn(config_name)
             else:
-                return  # User canceled
+                QMessageBox.warning(self, _("Warning"), _("Please select a configuration to connect."))
+        else:
+            self.vpn_manager.disconnect_vpn()
 
-        self.vpn_manager.connect(self.current_config_path, username, password)
-        
-    def disconnect_vpn(self):
-        self.vpn_manager.disconnect()
+    def import_config(self):
+        """
+        Handles the import of a new VPN configuration.
+        """
+        try:
+            if self.config_manager.import_config():
+                self.config_list.update_configs()
+        except Exception as e:
+            QMessageBox.critical(self, _("Error"), str(e))
 
-    def on_state_changed(self, state: C.VpnState):
+    def delete_config(self):
+        """
+        Handles the deletion of a selected VPN configuration.
+        """
+        config_name = self.config_list.get_selected_config()
+        if config_name:
+            reply = QMessageBox.question(self, _("Confirm Deletion"),
+                                           _("Are you sure you want to delete the configuration '{0}'?").format(
+                                               config_name),
+                                           QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if reply == QMessageBox.StandardButton.Yes:
+                self.config_manager.delete_config(config_name)
+                self.config_list.update_configs()
+        else:
+            QMessageBox.warning(self, _("Warning"), _("Please select a configuration to delete."))
+
+    def update_ui_state(self, state: VpnState):
+        """
+        Updates the UI elements based on the VPN state.
+        """
         self.control_panel.update_state(state)
-        self.config_list.setEnabled(state in [C.VpnState.DISCONNECTED, C.VpnState.ERROR, C.VpnState.NO_CONFIG])
         self.update_tray_icon(state)
-        
-        status_text = _(state.name.replace("_", " ").title())
-        self.control_panel.set_status(status_text)
-        
-        if state == C.VpnState.NO_CONFIG:
-            self.control_panel.set_status(_("Please Select a Configuration"))
+        self.config_list.setDisabled(state == VpnState.CONNECTING or state == VpnState.CONNECTED)
 
-    def on_connection_terminated(self):
-        self.log_viewer.add_log(_("Connection terminated."))
-    
+    def update_tray_icon(self, state: VpnState):
+        """
+        Updates the tray icon based on the VPN state.
+        """
+        icon_path = APP_ICON.get(state, APP_ICON[VpnState.DISCONNECTED])
+        self.tray_icon.setIcon(QIcon(icon_path))
+        self.tray_icon.setToolTip(f"OpenVPN-Py: {state.value}")
+
     def on_tray_icon_activated(self, reason):
-        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+        """
+        Handles activation of the tray icon.
+        """
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:  # Left click
             self.show()
 
-    def update_tray_icon(self, state: C.VpnState):
-        icon_map = {
-            C.VpnState.DISCONNECTED: "icon_disconnected.svg",
-            C.VpnState.CONNECTING: "icon_connecting.svg",
-            C.VpnState.CONNECTED: "icon_connected.svg",
-            C.VpnState.DISCONNECTING: "icon_connecting.svg",
-            C.VpnState.ERROR: "icon_error.svg",
-            C.VpnState.NO_CONFIG: "icon_disconnected.svg",
-        }
-        icon_path = icon_map.get(state, "icon_disconnected.svg")
-        self.tray_icon.setIcon(QIcon(icon_path))
-        self.tray_icon.setToolTip(f"{C.APP_NAME} - {_(state.name.replace('_', ' ').title())}")
-    
     def check_sudo_permissions(self):
+        """
+        Checks if the sudo permissions for the helper script are set up correctly.
+        """
         try:
-            # We test the helper script with a non-existent action to see if we can run it
-            command = ["sudo", "-n", str(C.HELPER_SCRIPT_PATH), "test"]
-            proc = subprocess.run(command, capture_output=True, text=True)
-            # The script will exit with 1 on "Unknown action", which is what we expect.
-            # If it fails with a password prompt (exit code not 1, stderr contains password prompt), permissions are wrong.
-            return "password" not in proc.stderr.lower()
-        except Exception:
-            return False
+            result = subprocess.run(['sudo', '-n', 'openvpn-gui-helper.sh', 'check'], capture_output=True, text=True)
+            if result.returncode != 0:
+                QMessageBox.warning(self, _("Sudo Permission Check"),
+                                      _("Warning: The application may not have the necessary sudo permissions to manage OpenVPN connections. Please run the install script again or configure sudoers manually."))
+        except FileNotFoundError:
+            QMessageBox.warning(self, _("Sudo Permission Check"),
+                                  _("Warning: The 'openvpn-gui-helper.sh' script was not found or sudo is not installed. VPN connection management may fail."))
 
-    def closeEvent(self, event):
-        event.ignore()
-        self.hide()
-        self.tray_icon.showMessage(
-            _("Application Minimized"),
-            _("OpenVPN-Py is still running in the background."),
-            QSystemTrayIcon.MessageIcon.Information,
-            2000
-        )
-
-    def quit_application(self):
-        self.log_viewer.add_log(_("Quitting application..."))
-        if self.vpn_manager.is_running:
-            self.vpn_manager.disconnect()
-        self.app.quit()
+    def quit_app(self):
+        """
+        Ensures a clean exit of the application.
+        """
+        self.vpn_manager.disconnect_vpn()
+        QApplication.instance().quit()
 
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
-    
-    # Install translator
-    translator = install_translator(app)
-
-    main_win = MainWindow(app)
-    main_win.show()
+    ex = OpenVpnPy()
+    ex.show()
     sys.exit(app.exec())
