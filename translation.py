@@ -1,33 +1,16 @@
-# translation.py
-import gettext
-from pathlib import Path
-from PyQt6.QtCore import QTranslator, QLibraryInfo, QCoreApplication
-
-# Konfiguriere gettext für eine Fallback-Übersetzung, falls Qt-Übersetzung fehlschlägt
-# Dies ist eine robuste Methode, um sicherzustellen, dass immer eine Übersetzung vorhanden ist.
-APP_NAME = "openvpn-gui"
-LOCALE_DIR = Path(__file__).parent / "i18n"
-
-# Initialisiere eine "leere" Übersetzungsfunktion
-_ = gettext.gettext
+import os
+from PySide6.QtCore import QTranslator, QLocale, QLibraryInfo, QCoreApplication
 
 
-def install_translator(app: QCoreApplication):
-    """Installiert den Qt-Translator für die Anwendung."""
-    global _
-    translator = QTranslator(app)
-    
-    # Versuche, die .qm-Datei für die Systemsprache zu laden
-    # Hinweis: .ts-Dateien müssen mit `lrelease i18n/de.ts` zu .qm-Dateien kompiliert werden.
-    # Das install.sh-Skript kann dies übernehmen.
-    locale = QCoreApplication.organizationDomain() # Systemsprache
-    if translator.load(f"{APP_NAME}_{locale}", str(LOCALE_DIR)):
-        app.installTranslator(translator)
-    
-    # Definiere die globale Übersetzungsfunktion
-    # QCoreApplication.translate ist die korrekte Methode für Qt-Anwendungen.
-    # Der Kontext "translation" kann beliebig sein.
-    def translate_func(text):
-        return QCoreApplication.translate("translation", text)
+def install_translator(app_name):
+    translator = QTranslator()
+    locale = QLocale.system().name()
 
-    _ = translate_func
+    # Look for translation files in the resource system
+    # The path should match the alias in the .qrc file
+    if translator.load(f":/i18n/{app_name}_{locale}.qm"):
+        QCoreApplication.installTranslator(translator)
+    else:
+        print(f"Warning: Could not load translation for locale {locale}")
+
+    return translator
