@@ -1,27 +1,34 @@
-# /constants.py
-
+import os
+from enum import Enum
 from pathlib import Path
-from enum import Enum, auto
 
+# Application Info
 APP_NAME = "OpenVPN-Py"
-APP_VERSION = "1.0"
-BASE_DIR = Path(__file__).parent
-CONFIG_DIR = BASE_DIR / "configs"
-UI_DIR = BASE_DIR / "ui"
-I18N_DIR = BASE_DIR / "i18n"
-SCRIPTS_DIR = BASE_DIR / "scripts"
+APP_VERSION = "1.0.0"
 
-HELPER_SCRIPT_PATH = SCRIPTS_DIR / "openvpn-gui-helper.sh"
+# User-specific paths
+USER_HOME = Path.home()
+APP_DATA_DIR = USER_HOME / ".config" / "openvpn-py"
+USER_CONFIG_DIR = APP_DATA_DIR / "configs"
+HELPER_SCRIPT_PATH = APP_DATA_DIR / "scripts/openvpn-gui-helper.sh"
 
-# Use Enum for more robust state management
+# System-wide config paths (add more if needed)
+SYSTEM_CONFIG_DIRS = [
+    Path("/etc/openvpn/client"),
+    Path("/etc/openvpn"),
+]
+
+# Runtime paths (using user's runtime directory for better isolation)
+# This directory is typically /run/user/$(id -u)
+RUNTIME_DIR = Path(os.getenv('XDG_RUNTIME_DIR', f"/run/user/{os.getuid()}"))
+PID_DIR = RUNTIME_DIR / "openvpn-py-gui"
+LOG_FILE_PATH = PID_DIR / "openvpn_gui_log.log"
+
+
 class VpnState(Enum):
-    DISCONNECTED = auto()
-    CONNECTING = auto()
-    CONNECTED = auto()
-    DISCONNECTING = auto()
-    AUTH_FAILED = auto()
-    ERROR = auto()
-    NO_CONFIG_SELECTED = auto()
-
-# Log messages
-LOG_LINE_SEPARATOR = "-" * 20
+    DISCONNECTED = 0
+    CONNECTING = 1
+    CONNECTED = 2
+    DISCONNECTING = 3
+    ERROR = 4
+    NO_CONFIG = 5

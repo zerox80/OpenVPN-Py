@@ -1,106 +1,110 @@
 #!/bin/bash
 
-# /scripts/openvpn-gui-helper.sh
+# Rigorose Fehlerprüfung
+set -euo pipefail
 
-# --- Configuration ---
-LOG_FILE="/tmp/openvpn-gui-helper.log"
-# Whitelisted directories for OpenVPN configs
-ALLOWED_CONFIG_DIRS=(
-    "/etc/openvpn/client"
-    # User-specific path is now handled dynamically
-)
-
-# --- Functions ---
-
-# Function to log messages
+# Logging-Funktion
 log() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - HELPER: $1" >> "/tmp/openvpn-gui-helper.log"
 }
 
-# Function to check if a config path is in a whitelisted directory
+# Funktion zur Überprüfung, ob ein Pfad sicher ist
 is_path_allowed() {
-    local config_file_path=$1
-    local config_dir
+    local path_to_check=$1
+    local allowed_dir
+    local real_path
 
-    # Resolve the real path to prevent traversal attacks (e.g., ../)
-    config_dir=$(dirname "$(realpath "$config_file_path")")
-
-    # Get the home directory of the user who invoked sudo
-    if [[ -n "$SUDO_USER" ]]; then
-        local target_home
-        target_home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
-        local user_config_dir_allowed="$target_home/.config/openvpn-gui/configs"
-        ALLOWED_CONFIG_DIRS+=("$user_config_dir_allowed")
-    else
-        log "WARNING: SUDO_USER not set. User-specific config path will not be allowed."
+    # Verhindert Path Traversal Attacken
+    if [[ "$path_to_check" == *".."* ]]; then
+        log "ERROR: Path contains '..', access denied: $path_to_check"
+        return 1
     fi
 
-    for allowed_dir in "${ALLOWED_CONFIG_DIRS[@]}"; do
-        if [[ "$config_dir" == "$allowed_dir" ]]; then
-            log "Path $config_file_path is in the allowed directory: $allowed_dir."
+    # Sicherstellen, dass die Datei im erlaubten Verzeichnis liegt
+    real_path=$(realpath "$path_to_check")
+
+    for allowed_dir in "/etc/openvpn" "$HOME/.config/openvpn-py/configs"; do
+        if [[ "$(realpath "$allowed_dir")" == "$(dirname "$real_path")" ]]; then
+            log "Path is allowed: $real_path"
             return 0
         fi
     done
 
-    log "ERROR: Path $config_file_path is NOT in any allowed directory."
+    log "ERROR: Path is not in an allowed directory: $real_path"
     return 1
 }
 
-# --- Main Logic ---
+ACTION=$1
+shift # Verschiebt die Argumente nach links ($2 wird zu $1 usw.)
 
-# Ensure log file exists and has correct permissions
-touch "$LOG_FILE"
-chmod 644 "$LOG_FILE"
+log "Action: $ACTION"
 
-log "Helper script started. Command: $1, Config: $2"
-
-case "$1" in
+case "$ACTION" in
     start)
-        CONFIG_FILE=$2
-        if [[ -z "$CONFIG_FILE" ]]; then
-            log "ERROR: No config file provided for start command."
-            exit 1
-        fi
+        CONFIG_FILE=$1
+        LOG_PATH=$2
+        PID_DIR=$(dirname "$LOG_PATH") # Leitet das PID-Verzeichnis vom Log-Pfad ab
 
         if ! is_path_allowed "$CONFIG_FILE"; then
-            echo "Error: The specified configuration path is not allowed."
             exit 1
         fi
-
+        
+        # Erstellt das Laufzeitverzeichnis, falls es nicht existiert
+        mkdir -p "$PID_DIR"
+        
+        # Eindeutige PID-Datei für diesen Prozess
+        PID_FILE=$(mktemp "$PID_DIR/openvpn.pid.XXXXXX")
+        
         log "Starting OpenVPN with config: $CONFIG_FILE"
-        # Use --daemon to run in the background. OpenVPN will manage its own PID file.
-        # Use --log to redirect OpenVPN logs
-        # Use --auth-user-pass with a file if credentials are provided via stdin
-        openvpn --config "$CONFIG_FILE" --daemon --log /tmp/openvpn_gui_log.log --auth-nocache
-        log "OpenVPN start command issued."
+        log "Log will be written to: $LOG_PATH"
+        log "PID will be written to: $PID_FILE"
+
+        # Startet OpenVPN als Daemon
+        # --auth-nocache: Verhindert das Caching von Passwörtern im Speicher
+        # --writepid: Schreibt die Prozess-ID in eine Datei
+        openvpn --config "$CONFIG_FILE" \
+                --daemon \
+                --writepid "$PID_FILE" \
+                --log "$LOG_PATH" \
+                --auth-user-pass \
+                --auth-nocache
+
+        # Gibt den Pfad zur PID-Datei an die Python-Anwendung zurück
+        echo "$PID_FILE"
         ;;
 
     stop)
-        PID_TO_KILL=$2
-        if [[ -z "$PID_TO_KILL" ]]; then
-            log "ERROR: No PID provided for stop command."
+        PID_FILE=$1
+        
+        # Sicherheitsprüfung: Stelle sicher, dass die PID-Datei im erwarteten Verzeichnis liegt
+        PID_DIR=$(realpath "$(dirname "$PID_FILE")")
+        ALLOWED_PID_DIR=$(realpath "$(dirname "$2")") # $2 ist der Log-Pfad, zur Verifizierung
+
+        if [[ "$PID_DIR" != "$ALLOWED_PID_DIR" ]] || [[ "$PID_FILE" == *".."* ]]; then
+            log "ERROR: Invalid PID file path provided: $PID_FILE"
             exit 1
         fi
 
-        # Security check: Ensure the PID actually belongs to an openvpn process
-        if ps -p "$PID_TO_KILL" -o comm= | grep -q "openvpn"; then
-            log "Stopping OpenVPN process with PID: $PID_TO_KILL"
-            kill "$PID_TO_KILL"
-            # Cleanup DNS settings managed by systemd-resolved
-            if command -v resolvectl &> /dev/null; then
-                log "Reverting DNS settings for tun0 interface."
-                resolvectl revert tun0
+        if [[ -f "$PID_FILE" ]]; then
+            PID_TO_KILL=$(cat "$PID_FILE")
+            log "Stopping OpenVPN process with PID $PID_TO_KILL from file $PID_FILE"
+            # Überprüfen, ob der Prozess noch existiert und ein 'openvpn' Prozess ist
+            if ps -p "$PID_TO_KILL" -o comm= | grep -q "openvpn"; then
+                kill "$PID_TO_KILL"
+                log "Process $PID_TO_KILL killed."
+            else
+                log "Process $PID_TO_KILL not found or not an OpenVPN process."
             fi
-            log "OpenVPN process $PID_TO_KILL stopped."
+            rm -f "$PID_FILE"
+            log "PID file $PID_FILE removed."
         else
-            log "ERROR: PID $PID_TO_KILL does not belong to an OpenVPN process. Not killing."
-            exit 1
+            log "ERROR: PID file not found: $PID_FILE"
         fi
         ;;
 
     *)
-        log "ERROR: Invalid command '$1'. Use 'start' or 'stop'."
-        echo "Invalid command. Use 'start <config_path>' or 'stop <pid>'."
+        log "ERROR: Unknown action '$ACTION'"
+        echo "Unknown action: $ACTION" >&2
         exit 1
         ;;
 esac
