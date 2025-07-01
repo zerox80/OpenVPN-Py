@@ -48,29 +48,23 @@ case "$COMMAND" in
         CONFIG_NAME=$(basename "$CONFIG_PATH")
         SERVICE_UNIT_NAME="openvpn-gui-client@${CONFIG_NAME%.*}"
 
-        # Read username and password from stdin and store in a temporary file
-        AUTH_FILE=$(mktemp)
-        chmod 600 "$AUTH_FILE"
+        # Read username and password from stdin to be piped to openvpn
         read -r username
         read -r password
-        echo "$username" > "$AUTH_FILE"
-        echo "$password" >> "$AUTH_FILE"
-
-        # The 'trap' line below is commented out to fix a bug.
-        # It was deleting the temporary password file before OpenVPN could read it.
-        # This fix will leave temporary credential files in the /tmp directory.
-        # trap 'rm -f "$AUTH_FILE"' EXIT
+        # This string will be piped to openvpn's stdin
+        AUTH_DATA="${username}\n${password}"
 
         log "$LOG_PATH" "Starting OpenVPN service '$SERVICE_UNIT_NAME'..."
 
         # Use systemd-run to start openvpn as a transient service.
-        # This is clean and manages the process well.
-        # The service will automatically log to the journal, but --log redirects it.
-        systemd-run --unit "$SERVICE_UNIT_NAME" \
+        # --pipe connects the stdin of this command to the service's stdin,
+        # allowing us to securely pass the credentials without a temp file.
+        echo -e "$AUTH_DATA" | systemd-run --unit "$SERVICE_UNIT_NAME" \
+                    --pipe \
                     --description "OpenVPN GUI client for $CONFIG_NAME" \
                     /usr/sbin/openvpn \
                         --config "$CONFIG_PATH" \
-                        --auth-user-pass "$AUTH_FILE" \
+                        --auth-user-pass \
                         --auth-nocache \
                         --log "$LOG_PATH"
 
