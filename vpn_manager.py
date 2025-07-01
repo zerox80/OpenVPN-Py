@@ -28,7 +28,7 @@ class VPNManager(QObject):
             self.state_changed.emit(self._state)
 
     def connect(self, config_path: str, username: str, password: str):
-        if self._status_timer.isActive():
+        if self._state == C.VpnState.CONNECTING or self._state == C.VpnState.CONNECTED:
             self.log_received.emit("Already connected or connecting.")
             return
 
@@ -75,10 +75,9 @@ class VPNManager(QObject):
 
     def disconnect(self):
         if not self._current_config_path:
-            self.log_received.emit("Not currently connected.")
+            self.log_received.emit("Not currently connected or no config selected.")
             return
 
-        # Always try to stop, even if timer isn't active, to clean up stale services
         self._set_state(C.VpnState.DISCONNECTING)
         self.log_received.emit("Disconnecting...")
         
@@ -145,4 +144,6 @@ class VPNManager(QObject):
         if error:
             self._set_state(C.VpnState.ERROR)
         else:
-            self._set_state(C.VpnState.DISCONNECTED)
+            # If the state was DISCONNECTING, the final state should be DISCONNECTED
+            if self._state == C.VpnState.DISCONNECTING:
+                 self._set_state(C.VpnState.DISCONNECTED)
