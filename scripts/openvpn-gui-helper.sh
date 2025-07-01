@@ -59,6 +59,7 @@ case "$COMMAND" in
         # Use systemd-run to start openvpn as a transient service.
         # --pipe connects the stdin of this command to the service's stdin,
         # allowing us to securely pass the credentials without a temp file.
+        # The service unit name is explicitly set to be predictable.
         echo -e "$AUTH_DATA" | systemd-run --unit "$SERVICE_UNIT_NAME" \
                     --pipe \
                     --description "OpenVPN GUI client for $CONFIG_NAME" \
@@ -68,7 +69,7 @@ case "$COMMAND" in
                         --auth-nocache \
                         --log "$LOG_PATH"
 
-        log "$LOG_PATH" "systemd-run command issued for $CONFIG_NAME."
+        log "$LOG_PATH" "systemd-run command issued for $SERVICE_UNIT_NAME."
         ;;
 
     stop)
