@@ -17,13 +17,11 @@ fi
 
 echo "Starting OpenVPN-Py uninstallation..."
 
-# --- Stop any running VPN connection managed by the helper ---
-# Find the PID and kill it gracefully
-HELPER_PATH="$BIN_DIR/$HELPER_SCRIPT_NAME"
-if [ -L "$HELPER_PATH" ] && command -v "$HELPER_PATH" &> /dev/null; then
-    echo "Attempting to stop any active OpenVPN connection..."
-    "$HELPER_PATH" stop &> /dev/null || true # Ignore errors if not running
-fi
+# --- Stop any running VPN connection managed by the application ---
+echo "Attempting to stop any active OpenVPN connections..."
+# Find all transient services created by the GUI and stop them.
+# The 'xargs -r' ensures systemctl is not run if no services are found.
+systemctl list-units --type=service --state=running | grep 'openvpn-gui-client@' | awk '{print $1}' | xargs -r systemctl stop || true
 
 
 # --- Remove sudoers file ---
