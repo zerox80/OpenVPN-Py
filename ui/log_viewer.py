@@ -1,7 +1,6 @@
 from PyQt6.QtWidgets import QTextEdit, QSizePolicy
 from PyQt6.QtCore import Qt
-
-MAX_LOG_LINES = 200
+import constants as C
 
 class LogViewer(QTextEdit):
     def __init__(self):
@@ -18,14 +17,12 @@ class LogViewer(QTextEdit):
 
         # Efficiently remove old lines if max is reached
         doc = self.document()
-        if doc.blockCount() > MAX_LOG_LINES:
-            blocks_to_delete = doc.blockCount() - MAX_LOG_LINES
+        if doc.blockCount() > C.MAX_LOG_LINES_IN_VIEWER:
+            blocks_to_delete = doc.blockCount() - C.MAX_LOG_LINES_IN_VIEWER
             cursor = self.textCursor()
             cursor.movePosition(cursor.MoveOperation.Start)
             cursor.movePosition(cursor.MoveOperation.NextBlock, cursor.MoveMode.KeepAnchor, blocks_to_delete)
             cursor.removeSelectedText()
-            # A final clean block operation for safety
-            cursor.deleteChar() 
 
         self.append(message)
 
