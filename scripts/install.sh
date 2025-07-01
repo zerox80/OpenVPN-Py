@@ -16,7 +16,25 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
+# --- Check for dependencies ---
+if ! command -v python3 &> /dev/null; then
+    echo "Error: python3 could not be found. Please install it to continue."
+    exit 1
+fi
+if ! command -v pip &> /dev/null; then
+    echo "Error: pip for python3 could not be found. Please install it to continue."
+    exit 1
+fi
+
+
 echo "Starting OpenVPN-Py installation..."
+
+# Use parent directory of the script's location
+SCRIPT_PARENT_DIR=$(dirname "$(dirname "$(realpath "$0")")")
+
+# --- Install Python dependencies ---
+echo "Installing Python dependencies from requirements.txt..."
+pip install -r "$SCRIPT_PARENT_DIR/requirements.txt"
 
 # --- Create directories ---
 echo "Creating installation directories in $INSTALL_DIR..."
@@ -28,9 +46,6 @@ mkdir -p "$INSTALL_DIR/icons"
 
 # --- Copy application files ---
 echo "Copying application files..."
-# Use parent directory of the script's location
-SCRIPT_PARENT_DIR=$(dirname "$(dirname "$(realpath "$0")")")
-
 cp "$SCRIPT_PARENT_DIR"/*.py "$INSTALL_DIR/"
 cp "$SCRIPT_PARENT_DIR"/ui/*.py "$INSTALL_DIR/ui/"
 cp "$SCRIPT_PARENT_DIR"/scripts/$HELPER_SCRIPT_NAME "$INSTALL_DIR/scripts/"
