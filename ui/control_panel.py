@@ -61,11 +61,13 @@ class ControlPanel(QWidget):
         else:
             self.status_label.setStyleSheet("") # Reset to default color
 
+        # Determine button enabled states
         can_connect = state in [C.VpnState.DISCONNECTED, C.VpnState.ERROR, C.VpnState.AUTH_FAILED]
         has_selection = state != C.VpnState.NO_CONFIG_SELECTED
-        
-        self.connect_button.setEnabled(can_connect and has_selection)
-        self.disconnect_button.setEnabled(state == C.VpnState.CONNECTED or state == C.VpnState.DISCONNECTING)
+        is_busy = state in [C.VpnState.CONNECTING, C.VpnState.DISCONNECTING]
+
+        self.connect_button.setEnabled(can_connect and has_selection and not is_busy)
+        self.disconnect_button.setEnabled(state == C.VpnState.CONNECTED and not is_busy)
 
         # Update button text for better UX
         if state == C.VpnState.CONNECTING:
