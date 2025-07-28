@@ -43,11 +43,12 @@ class VpnState(Enum):
     CONNECTED = auto()
     DISCONNECTING = auto()
     ERROR = auto()
-    AUTH_FAILED = auto() # Specific error state
+    AUTH_FAILED = auto()  # Specific error state
     NO_CONFIG_SELECTED = auto()
 
+
 # --- Logging ---
-LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
 # --- UI ---
 MAX_LOG_LINES_IN_VIEWER = 500
