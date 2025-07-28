@@ -7,6 +7,7 @@ import constants as C
 
 logger = logging.getLogger(__name__)
 
+
 class VPNManager(QObject):
     state_changed = pyqtSignal(C.VpnState)
     log_received = pyqtSignal(str)
@@ -16,25 +17,32 @@ class VPNManager(QObject):
         self._process = None
         self._current_config_path: Path | None = None
         self._state = C.VpnState.NO_CONFIG_SELECTED
-        
+
         self._status_timer = QTimer(self)
         self._status_timer.setInterval(2000)  # Check status every 2 seconds
         self._status_timer.timeout.connect(self.check_connection_status)
 
     def _set_state(self, state: C.VpnState):
         if self._state != state:
-            logger.info(f"VPN state changing from {self._state.name} to {state.name}")
+            logger.info(
+                f"VPN state changing from {self._state.name} to {state.name}"
+            )
             self._state = state
             self.state_changed.emit(self._state)
 
     def connect(self, config_path: str, username: str, password: str):
-        if self._state == C.VpnState.CONNECTING or self._state == C.VpnState.CONNECTED:
+        if (
+            self._state == C.VpnState.CONNECTING
+            or self._state == C.VpnState.CONNECTED
+        ):
             self.log_received.emit("Already connected or connecting.")
             return
 
         self._current_config_path = Path(config_path)
         self._set_state(C.VpnState.CONNECTING)
-        self.log_received.emit(f"Connecting to {self._current_config_path.name}...")
+        self.log_received.emit(
+            f"Connecting to {self._current_config_path.name}..."
+        )
 
         # Clear previous log file to avoid reading old status messages
         if C.LOG_FILE_PATH.exists():
@@ -42,13 +50,14 @@ class VPNManager(QObject):
 
         try:
             command = [
-                "sudo", "-A", 
-                str(C.HELPER_SCRIPT_PATH), 
-                "start", 
-                str(self._current_config_path), 
-                str(C.LOG_FILE_PATH)
+                "sudo",
+                "-A",
+                str(C.HELPER_SCRIPT_PATH),
+                "start",
+                str(self._current_config_path),
+                str(C.LOG_FILE_PATH),
             ]
-            
+
             auth_input = f"{username}\n{password}\n"
 
             self._process = subprocess.Popen(
@@ -56,9 +65,9 @@ class VPNManager(QObject):
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True
+                text=True,
             )
-            
+
             stdout, stderr = self._process.communicate(input=auth_input)
 
             if self._process.returncode != 0:
@@ -75,27 +84,39 @@ class VPNManager(QObject):
 
     def disconnect(self):
         if not self._current_config_path:
-            self.log_received.emit("Not currently connected or no config selected.")
+            self.log_received.emit(
+                "Not currently connected or no config selected."
+            )
             return
 
         self._set_state(C.VpnState.DISCONNECTING)
         self.log_received.emit("Disconnecting...")
-        
+
         try:
             command = [
-                "sudo", "-A", 
-                str(C.HELPER_SCRIPT_PATH), 
-                "stop", 
+                "sudo",
+                "-A",
+                str(C.HELPER_SCRIPT_PATH),
+                "stop",
                 self._current_config_path.name,
-                str(C.LOG_FILE_PATH)
+                str(C.LOG_FILE_PATH),
             ]
-            result = subprocess.run(command, check=True, capture_output=True, text=True)
-            self.log_received.emit(f"Disconnect command sent. Helper output: {result.stdout.strip()}")
-        
+            result = subprocess.run(
+                command, check=True, capture_output=True, text=True
+            )
+            self.log_received.emit(
+                "Disconnect command sent. Helper output: "
+                f"{result.stdout.strip()}"
+            )
+
         except subprocess.CalledProcessError as e:
-            self.log_received.emit(f"Error during disconnect: {e.stderr.strip()}")
+            self.log_received.emit(
+                f"Error during disconnect: {e.stderr.strip()}"
+            )
         except Exception as e:
-            self.log_received.emit(f"An unexpected error occurred during disconnect: {e}")
+            self.log_received.emit(
+                "An unexpected error occurred during disconnect: " f"{e}"
+            )
         finally:
             self._cleanup()
 
@@ -103,15 +124,18 @@ class VPNManager(QObject):
         if not self._current_config_path:
             self._cleanup()
             return
-        
+
         try:
             command = [
-                "sudo", "-A", 
-                str(C.HELPER_SCRIPT_PATH), 
-                "status", 
-                self._current_config_path.name
+                "sudo",
+                "-A",
+                str(C.HELPER_SCRIPT_PATH),
+                "status",
+                self._current_config_path.name,
             ]
-            result = subprocess.run(command, check=True, capture_output=True, text=True)
+            result = subprocess.run(
+                command, check=True, capture_output=True, text=True
+            )
             status_str = result.stdout.strip()
 
             if status_str == "connected":
@@ -119,17 +143,24 @@ class VPNManager(QObject):
                     try:
                         log_content = C.LOG_FILE_PATH.read_text()
                         if "Initialization Sequence Completed" in log_content:
-                            self.log_received.emit("Connection successfully established.")
+                            self.log_received.emit(
+                                "Connection successfully established."
+                            )
                             self._set_state(C.VpnState.CONNECTED)
                         # else, stay in CONNECTING state
                     except FileNotFoundError:
-                        pass # Log not yet available, stay in CONNECTING state
+                        pass  # Log not yet available, stay in CONNECTING state
 
             elif status_str == "error":
-                self.log_received.emit("VPN connection failed or is in an error state.")
+                self.log_received.emit(
+                    "VPN connection failed or is in an error state."
+                )
                 self._cleanup(error=True)
-            else: # disconnected
-                if self._state in (C.VpnState.CONNECTED, C.VpnState.CONNECTING):
+            else:  # disconnected
+                if self._state in (
+                    C.VpnState.CONNECTED,
+                    C.VpnState.CONNECTING,
+                ):
                     self.log_received.emit("VPN terminated.")
                 self._cleanup()
 
@@ -140,10 +171,15 @@ class VPNManager(QObject):
     def _cleanup(self, error=False):
         self._status_timer.stop()
         self._process = None
-        
+
         if error:
             self._set_state(C.VpnState.ERROR)
         else:
-            # If the state was DISCONNECTING, the final state should be DISCONNECTED
+            # If the state was DISCONNECTING, the final state should be
+            # DISCONNECTED
             if self._state == C.VpnState.DISCONNECTING:
-                 self._set_state(C.VpnState.DISCONNECTED)
+                self._set_state(C.VpnState.DISCONNECTED)
+            else:
+                self._set_state(C.VpnState.DISCONNECTED)
+
+        self._current_config_path = None
