@@ -37,15 +37,22 @@ class ConfigManager:
         discovered_configs = []
         seen_names = set()
         for config_dir in self.config_dirs:
-            if not config_dir.is_dir():
-                continue
+            try:
+                if not config_dir.is_dir():
+                    continue
 
-            for extension in ["*.ovpn", "*.conf"]:
-                for config_file in config_dir.glob(extension):
-                    config = VpnConfig(name=config_file.name, path=config_file)
-                    if config.name not in seen_names:
-                        discovered_configs.append(config)
-                        seen_names.add(config.name)
+                for extension in ["*.ovpn", "*.conf"]:
+                    for config_file in config_dir.glob(extension):
+                        if not config_file.is_file():
+                            continue
+                        config = VpnConfig(name=config_file.name, path=config_file)
+                        if config.name not in seen_names:
+                            discovered_configs.append(config)
+                            seen_names.add(config.name)
+            except PermissionError as e:
+                logger.warning(f"Permission denied accessing {config_dir}: {e}")
+            except Exception as e:
+                logger.error(f"Error scanning {config_dir}: {e}")
 
         discovered_configs.sort(key=lambda x: x.name)
         logger.info(f"{len(discovered_configs)} VPN configurations found.")
@@ -63,14 +70,21 @@ class ConfigManager:
                 f"A configuration named '{source.name}' already exists."
             )
 
+        # Ensure the user configs directory exists
+        C.USER_CONFIGS_DIR.mkdir(parents=True, exist_ok=True)
+        
         try:
-            shutil.copy(source, destination)
+            shutil.copy2(source, destination)  # copy2 preserves metadata
+            destination.chmod(0o600)  # Set secure permissions
             logger.info(
                 f"Configuration imported from '{source}' to '{destination}'."
             )
         except IOError as e:
             logger.error(f"Error copying configuration file: {e}")
             raise ConfigImportError(f"Could not import configuration: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error importing configuration: {e}")
+            raise ConfigImportError(f"Unexpected error: {e}")
 
     def delete_config(self, config: VpnConfig):
         """

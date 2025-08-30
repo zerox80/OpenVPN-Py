@@ -86,8 +86,14 @@ class CredentialsManager:
         service_name = self._get_service_name(config_path)
         try:
             # It's safe to try to delete even if they don't exist
-            keyring.delete_password(service_name, "username")
-            keyring.delete_password(service_name, "password")
+            try:
+                keyring.delete_password(service_name, "username")
+            except Exception:
+                pass  # May not exist
+            try:
+                keyring.delete_password(service_name, "password")
+            except Exception:
+                pass  # May not exist
             logger.info(f"Deleted credentials for {config_path.name}")
         except NoKeyringError:
             pass  # Nothing to delete

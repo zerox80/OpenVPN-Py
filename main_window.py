@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QFileDialog,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
+from typing import Optional
 import constants as C
 from ui.config_list import ConfigList
 from ui.control_panel import ControlPanel
@@ -40,7 +41,7 @@ class MainWindow(QMainWindow):
         self.log_viewer = LogViewer()
 
         # --- State Variables ---
-        self.selected_config_path: str | None = None
+        self.selected_config_path: Optional[str] = None
 
         self.init_ui()
         self.connect_signals()

@@ -19,10 +19,21 @@ echo "Starting OpenVPN-Py uninstallation..."
 
 # --- Stop any running VPN connection managed by the application ---
 echo "Attempting to stop any active OpenVPN connections..."
-# Find all transient services created by the GUI and stop them.
-# The 'xargs -r' ensures systemctl is not run if no services are found.
-systemctl list-units --type=service --state=running | grep 'openvpn-gui-client@' | awk '{print $1}' | xargs -r systemctl stop || true
-
+# Find all transient services created by the GUI and stop them (including suffixed forms)
+declare -a OVPN_GUI_UNITS=()
+mapfile -t OVPN_GUI_UNITS < <(systemctl list-units --all --type=service --no-legend --no-pager | awk '{print $1}' | grep -E '^openvpn-py-gui@[^ ]+\.service(|$)|^openvpn-py-gui@[^ ]+-[0-9]+-[0-9]+\.service$' || true)
+if [ ${#OVPN_GUI_UNITS[@]} -gt 0 ]; then
+  for u in "${OVPN_GUI_UNITS[@]}"; do
+    systemctl stop "$u" || true
+    systemctl reset-failed "$u" || true
+    if [ -f "/run/systemd/transient/$u" ]; then
+      rm -f "/run/systemd/transient/$u" || true
+    fi
+  done
+  systemctl daemon-reload || true
+else
+  echo "No running GUI-managed OpenVPN services found."
+fi
 
 # --- Remove sudoers file ---
 SUDOERS_FILE="/etc/sudoers.d/$SUDOERS_FILE_NAME"
@@ -65,6 +76,12 @@ if [ -d "$INSTALL_DIR" ]; then
     rm -rf "$INSTALL_DIR"
 else
     echo "Installation directory not found, skipping."
+fi
+
+# --- Remove transient auth directory (if any) ---
+if [ -d "/run/openvpn-py" ]; then
+    echo "Removing transient auth directory: /run/openvpn-py"
+    rm -rf "/run/openvpn-py"
 fi
 
 echo ""

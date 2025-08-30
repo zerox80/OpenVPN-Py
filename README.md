@@ -29,6 +29,7 @@ A simple Python-based GUI for OpenVPN, built with PyQt6. This application provid
 - **Python**: Python 3.8+ and `pip`.
 - **PyQt6**: The GUI is built with PyQt6. The installation script will attempt to install it.
 - **Keyring**: For secure password storage. The installation script will attempt to install it.
+- **systemd**: Required. The helper uses `systemd-run` to launch OpenVPN as a transient service. Systems without systemd are not supported.
 - **qt6-tools** (Optional but Recommended): For compiling translation files.
 
   ```bash
@@ -119,4 +120,3 @@ sudo ./scripts/uninstall.sh
 
 ```bash
 rm -rf ~/.config/openvpn-py
-```

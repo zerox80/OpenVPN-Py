@@ -9,6 +9,7 @@ HELPER_SCRIPT_NAME="openvpn-gui-helper.sh"
 DESKTOP_ENTRY_NAME="openvpn-py.desktop"
 SUDOERS_FILE_NAME="openvpn-py-sudoers"
 ICON_NAME="openvpn-py.png"
+VENV_DIR="$INSTALL_DIR/.venv"
 
 # Check for root privileges
 if [ "$(id -u)" -ne 0 ]; then
@@ -21,20 +22,30 @@ if ! command -v python3 &> /dev/null; then
     echo "Error: python3 could not be found. Please install it to continue."
     exit 1
 fi
-if ! command -v pip &> /dev/null; then
-    echo "Error: pip for python3 could not be found. Please install it to continue."
+# Ensure the 'venv' module is available (python3-venv on Debian/Ubuntu)
+if ! python3 - <<'PY'
+import venv
+PY
+then
+    echo "Error: Python 'venv' module is not available. Please install it (e.g., 'sudo apt install python3-venv') and try again."
     exit 1
 fi
 
+# Check for openvpn availability (warn if missing)
+if ! command -v openvpn &> /dev/null; then
+    echo "Warning: 'openvpn' binary not found in PATH. Please install OpenVPN (e.g., 'sudo apt install openvpn')."
+fi
+
+# Check for systemd-run availability (required by helper)
+if ! command -v systemd-run &> /dev/null; then
+    echo "Error: 'systemd-run' not found. This application requires systemd."
+    exit 1
+fi
 
 echo "Starting OpenVPN-Py installation..."
 
 # Use parent directory of the script's location
 SCRIPT_PARENT_DIR=$(dirname "$(dirname "$(realpath "$0")")")
-
-# --- Install Python dependencies ---
-echo "Installing Python dependencies from requirements.txt..."
-pip install -r "$SCRIPT_PARENT_DIR/requirements.txt"
 
 # --- Create directories ---
 echo "Creating installation directories in $INSTALL_DIR..."
@@ -44,6 +55,15 @@ mkdir -p "$INSTALL_DIR/scripts"
 mkdir -p "$INSTALL_DIR/i18n"
 mkdir -p "$INSTALL_DIR/icons"
 
+# --- Create Python virtual environment ---
+echo "Creating Python virtual environment in $VENV_DIR..."
+python3 -m venv "$VENV_DIR"
+
+# --- Install Python dependencies into venv ---
+echo "Installing Python dependencies into the virtual environment..."
+"$VENV_DIR/bin/python" -m pip install --upgrade pip
+"$VENV_DIR/bin/pip" install -r "$SCRIPT_PARENT_DIR/requirements.txt"
+
 # --- Copy application files ---
 echo "Copying application files..."
 cp "$SCRIPT_PARENT_DIR"/*.py "$INSTALL_DIR/"
@@ -52,6 +72,9 @@ cp "$SCRIPT_PARENT_DIR"/scripts/$HELPER_SCRIPT_NAME "$INSTALL_DIR/scripts/"
 cp "$SCRIPT_PARENT_DIR"/i18n/*.ts "$INSTALL_DIR/i18n/"
 cp "$SCRIPT_PARENT_DIR"/icons/$ICON_NAME "$INSTALL_DIR/icons/"
 
+# Ensure helper script is executable
+chmod +x "$INSTALL_DIR/scripts/$HELPER_SCRIPT_NAME"
+
 # --- Compile translations ---
 echo "Compiling translation files..."
 # Check if lrelease is available
@@ -59,9 +82,12 @@ if ! command -v lrelease &> /dev/null; then
     echo "Warning: 'lrelease' command not found. Cannot compile translations."
     echo "Please install 'qt6-tools' or equivalent for your distribution."
 else
-    lrelease "$INSTALL_DIR/i18n/de.ts" -qm "$INSTALL_DIR/i18n/de.qm"
+    for ts in "$INSTALL_DIR"/i18n/*.ts; do
+        [ -f "$ts" ] || continue
+        qm="${ts%.ts}.qm"
+        lrelease "$ts" -qm "$qm" || true
+    done
 fi
-
 
 # --- Create executable launcher ---
 echo "Creating launcher script in $BIN_DIR/$APP_NAME..."
@@ -69,7 +95,7 @@ cat << EOF > "$BIN_DIR/$APP_NAME"
 #!/bin/bash
 # Launcher for OpenVPN-Py
 cd "$INSTALL_DIR"
-python3 main.py "\$@"
+"$VENV_DIR/bin/python" main.py "\$@"
 EOF
 chmod +x "$BIN_DIR/$APP_NAME"
 
@@ -94,22 +120,53 @@ EOF
 # --- Set up sudoers rule for the helper script ---
 echo "Setting up sudoers rule..."
 SUDOERS_FILE="/etc/sudoers.d/$SUDOERS_FILE_NAME"
-echo "# Allows users in the 'openvpn' group to run the helper script without a password" > "$SUDOERS_FILE"
-echo "%openvpn ALL=(ALL) NOPASSWD: $BIN_DIR/$HELPER_SCRIPT_NAME *" >> "$SUDOERS_FILE"
+{
+  echo "# Allows users in the 'openvpn' group to run the helper script without a password"
+  echo "%openvpn ALL=(ALL) NOPASSWD: $BIN_DIR/$HELPER_SCRIPT_NAME *"
+  if [ -n "${SUDO_USER:-}" ]; then
+    echo "# Also allow the installing user to run it immediately (no relogin needed)"
+    echo "$SUDO_USER ALL=(ALL) NOPASSWD: $BIN_DIR/$HELPER_SCRIPT_NAME *"
+  fi
+} > "$SUDOERS_FILE"
 # Set correct permissions for the sudoers file
 chmod 0440 "$SUDOERS_FILE"
+
+# Validate sudoers file syntax
+if ! visudo -cf "$SUDOERS_FILE" > /dev/null; then
+  echo "Error: sudoers file validation failed. Reverting changes."
+  rm -f "$SUDOERS_FILE"
+  exit 1
+fi
+
+# Ensure 'openvpn' group exists and add invoking user to it
+if ! getent group openvpn > /dev/null; then
+  echo "Creating system group 'openvpn'..."
+  groupadd --system openvpn
+fi
+
+if [ -n "${SUDO_USER:-}" ]; then
+  echo "Adding user '$SUDO_USER' to group 'openvpn'..."
+  usermod -aG openvpn "$SUDO_USER"
+  ADDED_USER=1
+else
+  ADDED_USER=0
+fi
 
 echo ""
 echo "--------------------------------------------------------"
 echo "Installation complete!"
 echo ""
-echo "IMPORTANT: For this application to work, the current user"
-echo "must be a member of the 'openvpn' group."
-echo "You can add the user with the command:"
-echo "  sudo usermod -aG openvpn \$USER"
+echo "IMPORTANT: The helper is allowed via sudoers."
+echo "- Users in group 'openvpn' can run the helper passwordless."
+if [ "${ADDED_USER:-0}" -eq 1 ]; then
+  echo "- User '$SUDO_USER' was added to 'openvpn' group."
+  echo "- Additionally, a per-user sudoers entry was created for '$SUDO_USER' so you can use the app immediately without relogin."
+else
+  echo "- No installing user detected; only the group rule was added."
+fi
 echo ""
-echo "You may need to log out and log back in for the group"
-echo "changes to take effect."
+echo "Note: Group membership changes require re-login to take effect in new sessions."
+echo "The per-user rule keeps the current user working right away."
 echo "--------------------------------------------------------"
 
 exit 0

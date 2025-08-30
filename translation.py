@@ -18,8 +18,16 @@ def install_translator(app_name: str) -> QTranslator:
     i18n_dir = Path(__file__).parent.resolve() / "i18n"
 
     # Get short language code, e.g., "de" from "de_DE"
-    language_code = locale.split("_")[0]
+    language_code = locale.split("_")[0] if "_" in locale else locale
     translation_path = i18n_dir / f"{language_code}.qm"
+    
+    # Fallback to .ts file if .qm doesn't exist
+    if not translation_path.exists():
+        ts_path = i18n_dir / f"{language_code}.ts"
+        if ts_path.exists():
+            logger.info(f"Translation .qm file not found, .ts file exists at {ts_path}")
+            # Return empty translator but don't fail
+            return translator
 
     if translator.load(str(translation_path)):
         QCoreApplication.installTranslator(translator)
