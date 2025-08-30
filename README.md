@@ -102,8 +102,11 @@ sudo usermod -aG openvpn $USER
 
 - The helper (`scripts/openvpn-gui-helper.sh`) prefers the `openvpn-plugin-systemd-resolved.so` plugin. With OpenVPN ≥ 2.5 it adds `--dhcp-option DOMAIN-ROUTE .` automatically to route all DNS via VPN.
 - If the plugin is unavailable, it falls back to `update-systemd-resolved` (and then to `update-resolv-conf`) when AppArmor allows external scripts.
-- If neither plugin nor scripts are usable, scripts are disabled and DNS may leak. Install `openvpn-systemd-resolved` or allow one of the scripts to avoid leaks.
+- New: If neither is present, an internal fallback `dns-fallback.sh` is used (installed to `/etc/openvpn/scripts/openvpn-py-dns-fallback.sh`) when `resolvectl` is available. It configures DNS on the VPN interface via systemd-resolved and sets `~.` (route-all) to prevent DNS leaks.
+- If no integration is usable, scripts are disabled and DNS may leak. Install `openvpn-systemd-resolved` or ensure `systemd-resolved` is active to allow the fallback.
+ - Extra safety: Wenn gar keine der obigen Integrationen verwendet werden kann, versucht der Helper nach dem Start einmalig, anhand des Logs die gepushten DNS‑Server und das Interface zu erkennen und via `resolvectl` zu setzen (aktivierbar per `OPENVPN_PY_TRY_RESOLVED_AFTER_START=1`, default an). Beim Stop wird per `resolvectl revert <dev>` bereinigt.
 - AppArmor detection defaults to NOT enforcing if `aa-status` is missing. You can force conservative behavior by setting `OPENVPN_PY_ASSUME_AA_ENFORCE=1` in the environment before launching.
+ - To forbid using external scripts (only allow the plugin), set `OPENVPN_PY_DISABLE_EXTERNAL=1` before launching. By default, script fallbacks are allowed to avoid DNS leaks.
 
 Tips for configs:
 - You usually do not need to add DNS hooks manually. The helper sanitizes legacy `up`/`down` lines to avoid conflicts and applies the appropriate integration.
@@ -140,11 +143,29 @@ Tips for configs:
     ```
 
 - **DNS leaks or name resolution issues**:
-  - Install and enable `systemd-resolved` integration (preferred) or ensure one of the DNS helper scripts is available.
-  - The helper prefers the `openvpn-plugin-systemd-resolved.so` plugin. If missing and AppArmor allows scripts, it falls back to `update-systemd-resolved` (then `update-resolv-conf`).
+  - Ensure `systemd-resolved` is installed and active. The helper will use: plugin → update-systemd-resolved → update-resolv-conf → internal fallback (resolvectl) in that order.
+  - The internal fallback requires `resolvectl` and sets DNS on the VPN interface plus `~.` domain routing; it also reverts cleanly on disconnect.
   - If AppArmor detection is uncertain and you want to force conservative behavior (avoid external scripts), launch the app with:
     ```bash
     OPENVPN_PY_ASSUME_AA_ENFORCE=1 openvpn-py
+    ```
+  - If you previously disabled script fallbacks (`OPENVPN_PY_DISABLE_EXTERNAL=1`), unset it so DNS integration can activate:
+    ```bash
+    unset OPENVPN_PY_DISABLE_EXTERNAL
+    openvpn-py
+    ```
+  - Optional hardening: set `OPENVPN_PY_ENFORCE_DNS_BLACKHOLE=1` before launching to add temporary firewall rules that drop outbound DNS (TCP/UDP 53) on non-VPN interfaces during the session.
+  - Post‑Start Fix steuern:
+    ```bash
+    # Standard: aktiv (1). Zum Deaktivieren:
+    OPENVPN_PY_TRY_RESOLVED_AFTER_START=0 openvpn-py
+    ```
+  - Statische DNS erzwingen (falls Server keine DNS pusht):
+    ```bash
+    # Eine oder mehrere Adressen, Leerzeichen oder Kommas getrennt
+    OPENVPN_PY_STATIC_DNS="10.0.0.53, 10.0.0.54" openvpn-py
+    # Interface-Hinweis setzen, falls nicht tun0:
+    OPENVPN_PY_INTERFACE_HINT=tun1 OPENVPN_PY_STATIC_DNS="10.0.0.53 10.0.0.54" openvpn-py
     ```
 
 ---

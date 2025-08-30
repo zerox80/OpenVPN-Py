@@ -94,7 +94,6 @@ class VPNManager(QObject):
                 "start",
                 str(self._current_config_path),
                 str(C.LOG_FILE_PATH),
-                "--disable-external",
             ]
 
             auth_input = f"{username}\n{password}\n"

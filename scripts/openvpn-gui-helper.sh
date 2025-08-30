@@ -310,6 +310,27 @@ case "$COMMAND" in
             fi
         done
 
+        # Detect internal resolvectl-based fallback script (installed by our installer)
+        HAVE_INTERNAL_DNS_FALLBACK=0
+        INTERNAL_DNS_SCRIPT=""
+        # Prefer AppArmor-friendly location if present
+        for s in \
+            "/etc/openvpn/scripts/openvpn-py-dns-fallback.sh" \
+            "/usr/local/share/openvpn-py/scripts/dns-fallback.sh"; do
+            if [ -x "$s" ]; then
+                INTERNAL_DNS_SCRIPT="$s"
+                HAVE_INTERNAL_DNS_FALLBACK=1
+                break
+            fi
+        done
+        # Check that resolvectl (or systemd-resolve) exists before advertising fallback
+        if [ "$HAVE_INTERNAL_DNS_FALLBACK" -eq 1 ]; then
+            if ! command -v resolvectl >/dev/null 2>&1 && ! command -v systemd-resolve >/dev/null 2>&1; then
+                HAVE_INTERNAL_DNS_FALLBACK=0
+                INTERNAL_DNS_SCRIPT=""
+            fi
+        fi
+
         # Detect if AppArmor is enforcing OpenVPN profile; if so, running external scripts will likely be denied
         # Pragmatic default: if detection is uncertain, assume NOT enforcing to allow DNS integration.
         # Can be overridden by OPENVPN_PY_ASSUME_AA_ENFORCE=1
@@ -391,6 +412,21 @@ case "$COMMAND" in
             if [ "$HAS_UPDOWN" -eq 1 ] || [ "$HAS_RESOLV_SCRIPTS" -eq 1 ]; then
                 SANITIZE_CONFIG=1
             fi
+        elif { [ "$DISABLE_EXTERNAL_FLAG" != "1" ] && [ "${OPENVPN_PY_DISABLE_EXTERNAL:-0}" != "1" ]; } && [ "$HAVE_INTERNAL_DNS_FALLBACK" -eq 1 ] && [ "$APPARMOR_OPENVPN_ENFORCE" -eq 0 ]; then
+            # Tertiary fallback: our internal resolvectl-based script
+            UPDOWN_ARGS+=(--script-security 2 --up "$INTERNAL_DNS_SCRIPT" --down "$INTERNAL_DNS_SCRIPT" --down-pre)
+            log "$LOG_PATH" "Using internal DNS fallback script: $INTERNAL_DNS_SCRIPT."
+            # If OpenVPN >= 2.5 and config lacks DOMAIN-ROUTE, add it to signal default DNS routing intent
+            if [[ "$SUPPORTS_DOMAIN_ROUTE" -eq 1 ]]; then
+                if ! grep -Eq '(^|[[:space:]])dhcp-option[[:space:]]+DOMAIN-ROUTE' "$CONFIG_PATH"; then
+                    DNS_ARGS+=(--dhcp-option DOMAIN-ROUTE .)
+                    log "$LOG_PATH" "Adding '--dhcp-option DOMAIN-ROUTE .' for internal fallback."
+                fi
+            fi
+            # Sanitize original config if it contains conflicting hooks
+            if [ "$HAS_UPDOWN" -eq 1 ] || [ "$HAS_RESOLV_SCRIPTS" -eq 1 ]; then
+                SANITIZE_CONFIG=1
+            fi
         else
             # No DNS integration available; disable external scripts
             UPDOWN_ARGS+=(--script-security 0)
@@ -450,6 +486,55 @@ case "$COMMAND" in
             --auth-nocache
 
         log "$LOG_PATH" "systemd-run command issued for $SERVICE_UNIT_NAME."
+
+        # Best-effort DNS fix without up/down scripts: if we could not attach any DNS integration
+        # (plugin/script/fallback) and resolvectl is available, try to configure DNS after start
+        # by parsing the live log for pushed DNS and device name. Can be disabled via env.
+        if [ -z "${PLUGIN_PATH:-}" ] && [ "$HAVE_RESOLVED_SCRIPT" -eq 0 ] && [ "$HAVE_RESOLVCONF_SCRIPT" -eq 0 ] && [ "$HAVE_INTERNAL_DNS_FALLBACK" -eq 0 ]; then
+            if command -v resolvectl >/dev/null 2>&1 || command -v systemd-resolve >/dev/null 2>&1; then
+                if [ "${OPENVPN_PY_TRY_RESOLVED_AFTER_START:-1}" = "1" ]; then
+                    (
+                        DEV_GUESS="$(awk 'tolower($1)=="dev"{print $2; exit}' "$CONFIG_PATH" 2>/dev/null || true)"
+                        if [ -n "${OPENVPN_PY_INTERFACE_HINT:-}" ]; then DEV_GUESS="$OPENVPN_PY_INTERFACE_HINT"; fi
+                        # Normalize common short forms
+                        if [ "$DEV_GUESS" = "tun" ] || [ -z "$DEV_GUESS" ]; then DEV_GUESS="tun0"; fi
+                        # Poll the log for up to ~20s for device and DNS
+                        dns_done=0; iter=0
+                        while [ $iter -lt 20 ]; do
+                            iter=$((iter+1))
+                            content="$(tail -n 400 "$SERVICE_LOG" 2>/dev/null || true)"
+                            # Extract device name from log if present (overrides guess)
+                            dev_from_log="$(echo "$content" | sed -nE 's/.*TUN\/TAP device ([^ ]+) opened.*/\1/p' | tail -n1)"
+                            if [ -n "$dev_from_log" ]; then DEV_GUESS="$dev_from_log"; fi
+                            # Extract pushed DNS servers
+                            # Look for dhcp-option DNS x.x.x.x in PUSH_REPLY or OPTIONS IMPORT lines
+                            mapfile -t dns_arr < <(echo "$content" | grep -Eo 'dhcp-option DNS[ ]+([^ ,;]+)' | awk '{print $3}' | awk 'NF' | awk '!seen[$0]++')
+                            # If none found, allow static override via env var OPENVPN_PY_STATIC_DNS (space or comma separated)
+                            if [ ${#dns_arr[@]} -eq 0 ] && [ -n "${OPENVPN_PY_STATIC_DNS:-}" ]; then
+                                IFS=', ' read -r -a dns_arr <<< "$OPENVPN_PY_STATIC_DNS"
+                            fi
+                            if [ ${#dns_arr[@]} -gt 0 ] && [ -n "$DEV_GUESS" ]; then
+                                RESOLV_BIN="$(command -v resolvectl || command -v systemd-resolve)"
+                                echo "$(date '+%F %T') - HELPER: Post-start DNS fix: setting DNS on $DEV_GUESS -> ${dns_arr[*]}" >> "$SERVICE_LOG"
+                                $RESOLV_BIN dns "$DEV_GUESS" "${dns_arr[@]}" || true
+                                $RESOLV_BIN domain "$DEV_GUESS" '~.' || true
+                                if $RESOLV_BIN help 2>/dev/null | grep -q "default-route"; then $RESOLV_BIN default-route "$DEV_GUESS" yes || true; fi
+                                dns_done=1
+                                break
+                            fi
+                            sleep 1
+                        done
+                        if [ $dns_done -eq 0 ]; then
+                            echo "$(date '+%F %T') - HELPER: Post-start DNS fix: could not determine DNS or device; leaving as-is" >> "$SERVICE_LOG"
+                        fi
+                    ) & disown
+                else
+                    log "$LOG_PATH" "Post-start resolvectl DNS fix disabled via OPENVPN_PY_TRY_RESOLVED_AFTER_START=0"
+                fi
+            else
+                log "$LOG_PATH" "resolvectl not available; cannot attempt post-start DNS fix."
+            fi
+        fi
         ;;
     stop)
         CONFIG_NAME="$1" # Expects just the filename, e.g., "my-vpn.ovpn"
@@ -508,6 +593,19 @@ case "$COMMAND" in
             systemctl reset-failed "$u" 2>/dev/null || true
             if [ -f "/run/systemd/transient/$u" ]; then
                 rm -f "/run/systemd/transient/$u" || true
+            fi
+
+            # Best-effort DNS revert if we configured resolvectl outside of OpenVPN
+            if command -v resolvectl >/dev/null 2>&1 || command -v systemd-resolve >/dev/null 2>&1; then
+                RESOLV_BIN="$(command -v resolvectl || command -v systemd-resolve)"
+                LOGCAND="$LOG_DIR/${u}.log"
+                if [ -f "$LOGCAND" ]; then
+                    dev_from_log="$(sed -nE 's/.*TUN\/TAP device ([^ ]+) opened.*/\1/p' "$LOGCAND" | tail -n1)"
+                    if [ -n "$dev_from_log" ]; then
+                        $RESOLV_BIN revert "$dev_from_log" 2>/dev/null || true
+                        log "$LOG_PATH" "Reverted DNS on $dev_from_log via $RESOLV_BIN"
+                    fi
+                fi
             fi
 
             # Archive the last session log into Documents before removal

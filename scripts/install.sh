@@ -74,11 +74,18 @@ echo "Copying application files..."
 cp "$SCRIPT_PARENT_DIR"/*.py "$INSTALL_DIR/"
 cp "$SCRIPT_PARENT_DIR"/ui/*.py "$INSTALL_DIR/ui/"
 cp "$SCRIPT_PARENT_DIR"/scripts/$HELPER_SCRIPT_NAME "$INSTALL_DIR/scripts/"
+cp "$SCRIPT_PARENT_DIR"/scripts/dns-fallback.sh "$INSTALL_DIR/scripts/"
 cp "$SCRIPT_PARENT_DIR"/i18n/*.ts "$INSTALL_DIR/i18n/"
 cp "$SCRIPT_PARENT_DIR"/icons/$ICON_NAME "$INSTALL_DIR/icons/"
 
 # Ensure helper script is executable
 chmod +x "$INSTALL_DIR/scripts/$HELPER_SCRIPT_NAME"
+chmod +x "$INSTALL_DIR/scripts/dns-fallback.sh"
+
+# Install internal DNS fallback script into an AppArmor-friendly path
+mkdir -p /etc/openvpn/scripts
+cp "$SCRIPT_PARENT_DIR"/scripts/dns-fallback.sh "/etc/openvpn/scripts/openvpn-py-dns-fallback.sh"
+chmod 0755 "/etc/openvpn/scripts/openvpn-py-dns-fallback.sh"
 
 # --- Optional: set up systemd-resolved integration for DNS (prevents DNS leaks) ---
 echo "Checking for systemd-resolved OpenVPN integration..."
@@ -199,6 +206,9 @@ chmod +x "$BIN_DIR/$APP_NAME"
 echo "Creating symlink for helper script in $BIN_DIR/$HELPER_SCRIPT_NAME..."
 ln -sf "$INSTALL_DIR/scripts/$HELPER_SCRIPT_NAME" "$BIN_DIR/$HELPER_SCRIPT_NAME"
 
+echo "Installing fallback DNS script symlink in $BIN_DIR (optional use)..."
+ln -sf "$INSTALL_DIR/scripts/dns-fallback.sh" "$BIN_DIR/dns-fallback-openvpn-py.sh"
+
 # --- Create .desktop file for application menu ---
 echo "Creating .desktop entry..."
 cat << EOF > "/usr/share/applications/$DESKTOP_ENTRY_NAME"
@@ -220,11 +230,11 @@ SUDOERS_FILE="/etc/sudoers.d/$SUDOERS_FILE_NAME"
   echo "# Allows users in the 'openvpn' group to run the helper script without a password"
   echo "%openvpn ALL=(ALL) NOPASSWD: $BIN_DIR/$HELPER_SCRIPT_NAME *"
   echo "# Preserve selected environment variables for the helper"
-  echo "Defaults:%openvpn env_keep += \"OPENVPN_PY_FORCE_PLUGIN_PATH OPENVPN_PY_DISABLE_EXTERNAL OPENVPN_PY_ASSUME_AA_ENFORCE OPENVPN_PY_VERB\""
+  echo "Defaults:%openvpn env_keep += \"OPENVPN_PY_FORCE_PLUGIN_PATH OPENVPN_PY_DISABLE_EXTERNAL OPENVPN_PY_ASSUME_AA_ENFORCE OPENVPN_PY_VERB OPENVPN_PY_ENFORCE_DNS_BLACKHOLE OPENVPN_PY_TRY_RESOLVED_AFTER_START OPENVPN_PY_STATIC_DNS OPENVPN_PY_INTERFACE_HINT\""
   if [ -n "${SUDO_USER:-}" ]; then
     echo "# Also allow the installing user to run it immediately (no relogin needed)"
     echo "$SUDO_USER ALL=(ALL) NOPASSWD: $BIN_DIR/$HELPER_SCRIPT_NAME *"
-    echo "Defaults:$SUDO_USER env_keep += \"OPENVPN_PY_FORCE_PLUGIN_PATH OPENVPN_PY_DISABLE_EXTERNAL OPENVPN_PY_ASSUME_AA_ENFORCE OPENVPN_PY_VERB\""
+    echo "Defaults:$SUDO_USER env_keep += \"OPENVPN_PY_FORCE_PLUGIN_PATH OPENVPN_PY_DISABLE_EXTERNAL OPENVPN_PY_ASSUME_AA_ENFORCE OPENVPN_PY_VERB OPENVPN_PY_ENFORCE_DNS_BLACKHOLE OPENVPN_PY_TRY_RESOLVED_AFTER_START OPENVPN_PY_STATIC_DNS OPENVPN_PY_INTERFACE_HINT\""
   fi
 } > "$SUDOERS_FILE"
 # Set correct permissions for the sudoers file
