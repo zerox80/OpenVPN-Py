@@ -125,12 +125,25 @@ case "$COMMAND" in
 
         # Read credentials from stdin and write to a root-only temp file
         mkdir -p "$AUTH_DIR"
-        chmod 700 "$AUTH_DIR"
+        # Directory must be traversable by the user to read log via symlink; keep files themselves protected
+        chmod 755 "$AUTH_DIR"
         read -r username
         read -r password
         AUTH_FILE="$AUTH_DIR/${SERVICE_FULL}.auth"
         umask 077
         printf "%s\n%s\n" "$username" "$password" > "$AUTH_FILE"
+
+        # If config specifies an unprivileged user/group, chown the auth file accordingly
+        CFG_USER="$(awk 'tolower($1)=="user"{print $2; exit}' "$CONFIG_PATH" 2>/dev/null || true)"
+        CFG_GROUP="$(awk 'tolower($1)=="group"{print $2; exit}' "$CONFIG_PATH" 2>/dev/null || true)"
+        if [ -n "${CFG_USER:-}" ] || [ -n "${CFG_GROUP:-}" ]; then
+            # Default missing group to the user's primary group
+            if [ -n "${CFG_USER:-}" ] && [ -z "${CFG_GROUP:-}" ]; then
+                CFG_GROUP="$(id -gn "$CFG_USER" 2>/dev/null || echo "$CFG_USER")"
+            fi
+            chown "${CFG_USER:-root}":"${CFG_GROUP:-root}" "$AUTH_FILE" 2>/dev/null || true
+            chmod 600 "$AUTH_FILE" || true
+        fi
 
         # Use an AppArmor-allowed log location and symlink GUI log to it
         SERVICE_LOG="$AUTH_DIR/${SERVICE_FULL}.log"
