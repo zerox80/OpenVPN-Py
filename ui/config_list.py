@@ -1,7 +1,7 @@
 # /ui/config_list.py
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QListView, QPushButton, QHBoxLayout, QAbstractItemView
-from PyQt6.QtCore import QStringListModel, pyqtSignal
-from typing import List
+from PyQt6.QtCore import QStringListModel, pyqtSignal, QItemSelectionModel
+from typing import List, Optional
 from config_manager import VpnConfig
 
 class ConfigList(QWidget):
@@ -72,3 +72,27 @@ class ConfigList(QWidget):
         selected_config = next((c for c in self.configs if c.name == selected_config_name), None)
         if selected_config:
             self.delete_config_requested.emit(str(selected_config.path))
+
+    def get_selected_config_path(self) -> Optional[str]:
+        """Return the full path of the currently selected config, if any."""
+        selected_indexes = self.list_view.selectedIndexes()
+        if not selected_indexes:
+            return None
+        row = selected_indexes[0].row()
+        if row < 0 or row >= len(self.configs):
+            return None
+        return str(self.configs[row].path)
+
+    def select_config_by_path(self, config_path: str) -> bool:
+        """Programmatically select a config by its full path. Returns True if selected."""
+        for idx, cfg in enumerate(self.configs):
+            if str(cfg.path) == config_path:
+                model_index = self.model.index(idx)
+                if model_index.isValid():
+                    self.list_view.setCurrentIndex(model_index)
+                    self.list_view.selectionModel().select(
+                        model_index,
+                        QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows,
+                    )
+                    return True
+        return False

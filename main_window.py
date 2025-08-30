@@ -9,8 +9,11 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QSplitter,
     QFileDialog,
+    QMenu,
+    QSystemTrayIcon,
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QIcon, QAction, QDesktopServices
+from PyQt6.QtCore import Qt, pyqtSignal, QUrl, QSettings
 from typing import Optional
 import constants as C
 from ui.config_list import ConfigList
@@ -30,6 +33,10 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle(C.APP_NAME)
         self.setMinimumSize(800, 600)
+        try:
+            self.setWindowIcon(QIcon(str(self._icon_path())))
+        except Exception:
+            pass
 
         # --- Manager Classes ---
         self.config_manager = ConfigManager()
@@ -49,10 +56,16 @@ class MainWindow(QMainWindow):
 
         self.init_ui()
         self.connect_signals()
+        self._init_tray()
 
         # Load initial configurations
         self.load_configs()
         self.control_panel.update_state(C.VpnState.NO_CONFIG_SELECTED)
+        # Ensure tray reflects initial state
+        try:
+            self._update_tray_from_state(C.VpnState.NO_CONFIG_SELECTED)
+        except Exception:
+            pass
 
     def init_ui(self):
         # --- Layout ---
@@ -76,6 +89,7 @@ class MainWindow(QMainWindow):
         menubar = self.menuBar()
         view_menu = menubar.addMenu(self.tr("View"))
         self.open_logs_action = view_menu.addAction(self.tr("Open Logs Window"))
+        self.open_logs_folder_action = view_menu.addAction(self.tr("Open Logs Folder"))
 
     def connect_signals(self):
         # ConfigList signals
@@ -98,6 +112,7 @@ class MainWindow(QMainWindow):
 
         # Actions
         self.open_logs_action.triggered.connect(self.open_logs_window)
+        self.open_logs_folder_action.triggered.connect(self.open_logs_folder)
 
     def load_configs(self):
         self.config_list.clear_configs()
@@ -105,6 +120,16 @@ class MainWindow(QMainWindow):
             configs = self.config_manager.discover_configs()
             for config in configs:
                 self.config_list.add_config(config)
+            # Try to restore last selected config
+            try:
+                settings = QSettings(C.APP_NAME, C.APP_NAME)
+                last = settings.value("last_config_path", None)
+                if isinstance(last, str) and last:
+                    if not self.config_list.select_config_by_path(last):
+                        # Remove stale setting if file no longer exists in list
+                        settings.remove("last_config_path")
+            except Exception:
+                pass
         except Exception as e:
             logger.error(f"Failed to discover configs: {e}")
             self.show_error_message(
@@ -118,6 +143,16 @@ class MainWindow(QMainWindow):
         logger.info(f"Config selected: {config_path}")
         self.selected_config_path = config_path
         self.control_panel.update_state(C.VpnState.DISCONNECTED)
+        try:
+            settings = QSettings(C.APP_NAME, C.APP_NAME)
+            settings.setValue("last_config_path", config_path)
+        except Exception:
+            pass
+        # Ensure tray reflects that a config is now selected
+        try:
+            self._update_tray_from_state(C.VpnState.DISCONNECTED)
+        except Exception:
+            pass
 
     def on_connect_clicked(self):
         if not self.selected_config_path:
@@ -166,6 +201,8 @@ class MainWindow(QMainWindow):
                         )
                     # Try reconnecting immediately with new credentials
                     self.vpn_manager.connect(self.selected_config_path, username, password)
+            # Update tray tooltip and actions for any state change
+            self._update_tray_from_state(state)
         except Exception:
             pass
 
@@ -210,9 +247,22 @@ class MainWindow(QMainWindow):
                 )
                 self.config_manager.delete_config(config_to_delete)
                 self.credentials_manager.delete_credentials(config_path)
+                # Clear persisted selection if it matches the deleted config
+                try:
+                    settings = QSettings(C.APP_NAME, C.APP_NAME)
+                    last = settings.value("last_config_path", None)
+                    if isinstance(last, str) and last == config_path_str:
+                        settings.remove("last_config_path")
+                except Exception:
+                    pass
                 self.load_configs()
                 self.selected_config_path = None
                 self.control_panel.update_state(C.VpnState.NO_CONFIG_SELECTED)
+                # Update tray to disable connect action and clear tooltip suffix
+                try:
+                    self._update_tray_from_state(C.VpnState.NO_CONFIG_SELECTED)
+                except Exception:
+                    pass
             except Exception as e:
                 logger.error(f"Failed to delete config: {e}")
                 self.show_error_message(self.tr("Deletion Failed"), str(e))
@@ -225,6 +275,14 @@ class MainWindow(QMainWindow):
         self.logs_window.show()
         self.logs_window.raise_()
         self.logs_window.activateWindow()
+
+    def open_logs_folder(self):
+        try:
+            path = self._logs_documents_dir()
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        except Exception as e:
+            logger.error(f"Failed to open logs folder: {e}")
+            self.show_error_message(self.tr("Open Logs Folder"), str(e))
 
     def on_log_received(self, message: str):
         # Always append to inline viewer
@@ -256,3 +314,96 @@ class MainWindow(QMainWindow):
             event.accept()
         else:
             event.ignore()
+
+    # --- Utilities and Tray ---
+    def _icon_path(self) -> Path:
+        try:
+            return Path(__file__).parent / "icons" / "openvpn-py.png"
+        except Exception:
+            return Path("icons/openvpn-py.png")
+
+    def _logs_documents_dir(self) -> Path:
+        home = Path.home()
+        candidates = [home / "Documents" / "OpenVPN-Py", home / "Dokumente" / "OpenVPN-Py"]
+        for p in candidates:
+            try:
+                p.mkdir(parents=True, exist_ok=True)
+                return p
+            except Exception:
+                continue
+        # Fallback to app log dir
+        try:
+            C.LOG_DIR.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        return C.LOG_DIR
+
+    def _init_tray(self):
+        try:
+            self.tray = QSystemTrayIcon(QIcon(str(self._icon_path())), self)
+            self.tray.setToolTip(self.tr("Disconnected"))
+
+            menu = QMenu(self)
+            self.tray_show_action = QAction(self.tr("Show/Hide Window"), self)
+            self.tray_connect_action = QAction(self.tr("Connect"), self)
+            self.tray_logs_action = QAction(self.tr("Open Logs Folder"), self)
+            self.tray_quit_action = QAction(self.tr("Quit"), self)
+
+            self.tray_show_action.triggered.connect(self._toggle_window_visibility)
+            self.tray_connect_action.triggered.connect(self._tray_connect_or_disconnect)
+            self.tray_logs_action.triggered.connect(self.open_logs_folder)
+            self.tray_quit_action.triggered.connect(self.close)
+
+            menu.addAction(self.tray_show_action)
+            menu.addSeparator()
+            menu.addAction(self.tray_connect_action)
+            menu.addAction(self.tray_logs_action)
+            menu.addSeparator()
+            menu.addAction(self.tray_quit_action)
+
+            self.tray.setContextMenu(menu)
+            self.tray.show()
+        except Exception:
+            # Tray may not be available in some environments
+            pass
+
+    def _update_tray_from_state(self, state):
+        try:
+            if not hasattr(self, "tray") or self.tray is None:
+                return
+            # Tooltip
+            tip = state.name.replace("_", " ").title()
+            if self.selected_config_path:
+                tip = f"{tip} - {Path(self.selected_config_path).name}"
+            self.tray.setToolTip(tip)
+            # Connect/Disconnect action label
+            if state in (C.VpnState.CONNECTED, C.VpnState.CONNECTING):
+                self.tray_connect_action.setText(self.tr("Disconnect"))
+            else:
+                self.tray_connect_action.setText(self.tr("Connect"))
+            # Enable connect only if a config is selected, except when connected/connecting where action is always valid
+            should_enable = (
+                state in (C.VpnState.CONNECTED, C.VpnState.CONNECTING)
+                or bool(self.selected_config_path)
+            )
+            self.tray_connect_action.setEnabled(should_enable)
+        except Exception:
+            pass
+
+    def _toggle_window_visibility(self):
+        if self.isVisible():
+            self.hide()
+        else:
+            self.show()
+            self.raise_()
+            self.activateWindow()
+
+    def _tray_connect_or_disconnect(self):
+        try:
+            state = getattr(self.vpn_manager, "_state", C.VpnState.DISCONNECTED)
+            if state in (C.VpnState.CONNECTED, C.VpnState.CONNECTING):
+                self.vpn_manager.disconnect()
+            else:
+                self.on_connect_clicked()
+        except Exception:
+            pass

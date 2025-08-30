@@ -1,5 +1,6 @@
 # constants.py
 import logging
+import os
 from pathlib import Path
 from enum import Enum, auto
 
@@ -10,8 +11,9 @@ VERSION = "1.0.0"
 # --- PATHS ---
 # Using pathlib for robust path management.
 
-# Base directory for user-specific files, e.g., ~/.config/openvpn-py
-xdg_config_home = Path.home() / ".config"
+# Base directory for user-specific files, prefer XDG_CONFIG_HOME if set
+xdg_config_env = os.environ.get("XDG_CONFIG_HOME", None)
+xdg_config_home = Path(xdg_config_env) if xdg_config_env else (Path.home() / ".config")
 USER_DATA_DIR = xdg_config_home / "openvpn-py"
 
 # Directories for configs, logs, and runtime data

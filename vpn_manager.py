@@ -3,9 +3,10 @@ import subprocess
 import logging
 import signal
 import os
+import time
 from pathlib import Path
 from typing import Optional
-from PyQt6.QtCore import QObject, pyqtSignal, QTimer
+from PyQt6.QtCore import QObject, pyqtSignal, QTimer, QCoreApplication
 import constants as C
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,14 @@ class VPNManager(QObject):
         self._current_config_path: Optional[Path] = None
         self._state = C.VpnState.NO_CONFIG_SELECTED
         self._ever_connected = False
+        # Track connection attempt timing and heuristics
+        self._connect_started_at: Optional[float] = None
+        self._connected_polls: int = 0
+
+        # Timeout thresholds
+        self._CONNECT_TIMEOUT_SECONDS = 90  # fail CONNECTING after this many seconds
+        self._STATUS_CMD_TIMEOUT_SECONDS = 5
+        self._DISCONNECT_CMD_TIMEOUT_SECONDS = 15
 
         self._status_timer = QTimer(self)
         self._status_timer.setInterval(2000)  # Check status every 2 seconds
@@ -67,6 +76,8 @@ class VPNManager(QObject):
             f"Connecting to {self._current_config_path.name}..."
         )
         self._ever_connected = False
+        self._connect_started_at = time.monotonic()
+        self._connected_polls = 0
 
         # Clear previous log file to avoid reading old status messages
         try:
@@ -83,6 +94,7 @@ class VPNManager(QObject):
                 "start",
                 str(self._current_config_path),
                 str(C.LOG_FILE_PATH),
+                "--disable-external",
             ]
 
             auth_input = f"{username}\n{password}\n"
@@ -120,9 +132,8 @@ class VPNManager(QObject):
                 raise RuntimeError(error_message)
 
             self.log_received.emit("VPN process started via helper.")
-            self._status_timer.start()
-            # start log tailing from beginning of current log file
-            self._start_log_tail()
+            # Start timers only if a Qt application exists (prevents test/headless crashes)
+            self._start_timers_if_possible()
 
         except subprocess.TimeoutExpired:
             self.log_received.emit("Connection timeout - helper script did not respond")
@@ -151,7 +162,7 @@ class VPNManager(QObject):
                 str(C.LOG_FILE_PATH),
             ]
             result = subprocess.run(
-                command, check=True, capture_output=True, text=True
+                command, check=True, capture_output=True, text=True, timeout=self._DISCONNECT_CMD_TIMEOUT_SECONDS
             )
             self.log_received.emit(
                 "Disconnect command sent. Helper output: "
@@ -174,6 +185,19 @@ class VPNManager(QObject):
             self._cleanup()
             return
 
+        # Guard: abort CONNECTING if we've exceeded a reasonable timeout
+        if self._state == C.VpnState.CONNECTING and self._connect_started_at is not None:
+            elapsed = time.monotonic() - self._connect_started_at
+            if elapsed > self._CONNECT_TIMEOUT_SECONDS:
+                self.log_received.emit(
+                    f"Connection attempt timed out after {int(elapsed)}s."
+                )
+                self._emit_log_snippet(header="Timeout log excerpt:")
+                # Ask helper to stop and archive last session log
+                self._invoke_helper_stop_for_archive()
+                self._cleanup(error=True)
+                return
+
         try:
             command = [
                 "sudo",
@@ -183,7 +207,7 @@ class VPNManager(QObject):
                 self._current_config_path.name,
             ]
             result = subprocess.run(
-                command, check=True, capture_output=True, text=True
+                command, check=True, capture_output=True, text=True, timeout=self._STATUS_CMD_TIMEOUT_SECONDS
             )
             status_str = result.stdout.strip()
 
@@ -197,9 +221,28 @@ class VPNManager(QObject):
                             )
                             self._set_state(C.VpnState.CONNECTED)
                             self._ever_connected = True
-                        # else, stay in CONNECTING state
+                            self._connected_polls = 0
+                        else:
+                            # Fallback: after several consecutive 'connected' reports, proceed
+                            self._connected_polls += 1
+                            if self._connected_polls >= 3:
+                                self.log_received.emit(
+                                    "Helper reports connected repeatedly; proceeding without the usual log marker."
+                                )
+                                self._set_state(C.VpnState.CONNECTED)
+                                self._ever_connected = True
+                                self._connected_polls = 0
+                            # otherwise, stay in CONNECTING
                     except FileNotFoundError:
-                        pass  # Log not yet available, stay in CONNECTING state
+                        # Log not yet available, count towards heuristic
+                        self._connected_polls += 1
+                        if self._connected_polls >= 3:
+                            self.log_received.emit(
+                                "Helper reports connected repeatedly; proceeding though log not yet readable."
+                            )
+                            self._set_state(C.VpnState.CONNECTED)
+                            self._ever_connected = True
+                            self._connected_polls = 0
 
             elif status_str == "error":
                 # Try to determine if this was an authentication failure
@@ -293,6 +336,8 @@ class VPNManager(QObject):
                 self._set_state(C.VpnState.DISCONNECTED)
 
         self._current_config_path = None
+        self._connect_started_at = None
+        self._connected_polls = 0
 
     # --- Internal: log tailing ---
     def _start_log_tail(self):
@@ -348,4 +393,18 @@ class VPNManager(QObject):
             ]
             subprocess.run(command, check=False, capture_output=True, text=True)
         except Exception:
+            pass
+
+    def _start_timers_if_possible(self):
+        """Start status and log timers only if a Qt application exists.
+        This avoids crashes in unit tests or headless environments without Q(Core)Application.
+        """
+        try:
+            if QCoreApplication.instance() is None:
+                return
+            self._status_timer.start()
+            # start log tailing from beginning of current log file
+            self._start_log_tail()
+        except Exception:
+            # Never let timer issues break core logic
             pass

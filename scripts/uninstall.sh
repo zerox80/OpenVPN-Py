@@ -95,7 +95,8 @@ if [ -d "/run/openvpn-py" ]; then
 fi
 
 # --- Remove logs created in /run/openvpn by helper ---
-find /run/openvpn -maxdepth 1 -type f -name 'openvpn-py-*.log' -exec rm -f {} + 2>/dev/null || true
+# Only remove our helper's transient logs: openvpn-py-gui@*.service.log
+find /run/openvpn -maxdepth 1 -type f -name 'openvpn-py-gui@*.service.log' -exec rm -f {} + 2>/dev/null || true
 
 # --- Remove user-visible log symlinks and dirs in Documents/Dokumente ---
 cleanup_user_logs() {
@@ -106,6 +107,8 @@ cleanup_user_logs() {
       echo "Cleaning log symlinks in: $base_dir"
       rm -f "$base_dir"/openvpn-current.log 2>/dev/null || true
       rm -f "$base_dir"/openvpn-last.log 2>/dev/null || true
+      # Remove only symlinks for per-config logs, keep archived real files intact
+      find "$base_dir" -maxdepth 1 -type l -name 'openvpn-*.log' -exec rm -f {} + 2>/dev/null || true
       # Attempt to remove dir if empty
       rmdir "$base_dir" 2>/dev/null || true
     fi

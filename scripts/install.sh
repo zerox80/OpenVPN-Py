@@ -82,18 +82,32 @@ chmod +x "$INSTALL_DIR/scripts/$HELPER_SCRIPT_NAME"
 
 # --- Optional: set up systemd-resolved integration for DNS (prevents DNS leaks) ---
 echo "Checking for systemd-resolved OpenVPN integration..."
-# Detect presence of update-systemd-resolved script or plugin
+
+# Detect presence of the external helper script (fallback path)
 HAVE_RESOLVED_SCRIPT=0
 for s in \
   "/etc/openvpn/update-systemd-resolved" \
   "/etc/openvpn/scripts/update-systemd-resolved" \
   "/usr/libexec/openvpn/update-systemd-resolved" \
   "/usr/lib/openvpn/plugins/update-systemd-resolved"; do
-  if [ -x "$s" ]; then HAVE_RESOLVED_SCRIPT=1; break; fi
+  if [ -x "$s" ]; then HAVE_RESOLVED_SCRIPT=1; RESOLVED_SCRIPT_PATH="$s"; break; fi
 done
 
-if [ $HAVE_RESOLVED_SCRIPT -eq 0 ]; then
-  echo "systemd-resolved helper not found. Attempting to install 'openvpn-systemd-resolved'..."
+# Detect presence of the preferred systemd-resolved OpenVPN plugin
+HAVE_SYSTEMD_RESOLVED_PLUGIN=0
+PLUGIN_PATH=""
+for p in \
+  "/usr/lib/x86_64-linux-gnu/openvpn/plugins/openvpn-plugin-systemd-resolved.so" \
+  "/usr/lib/openvpn/plugins/openvpn-plugin-systemd-resolved.so" \
+  "/usr/lib64/openvpn/plugins/openvpn-plugin-systemd-resolved.so" \
+  "/lib/openvpn/plugins/openvpn-plugin-systemd-resolved.so" \
+  "/usr/lib64/openvpn/plugins/systemd-resolved/openvpn-plugin-systemd-resolved.so"; do
+  if [ -f "$p" ]; then HAVE_SYSTEMD_RESOLVED_PLUGIN=1; PLUGIN_PATH="$p"; break; fi
+done
+
+# Attempt to install plugin package when missing (preferred over external script)
+if [ $HAVE_SYSTEMD_RESOLVED_PLUGIN -eq 0 ]; then
+  echo "systemd-resolved plugin not found. Attempting to install 'openvpn-systemd-resolved'..."
   if command -v apt-get >/dev/null 2>&1; then
     apt-get update -y || true
     DEBIAN_FRONTEND=noninteractive apt-get install -y openvpn-systemd-resolved || true
@@ -108,12 +122,51 @@ if [ $HAVE_RESOLVED_SCRIPT -eq 0 ]; then
   else
     echo "Note: Unknown package manager. Please install 'openvpn-systemd-resolved' manually to enable DNS integration."
   fi
+
+  # Re-detect after attempted installation
+  for p in \
+    "/usr/lib/x86_64-linux-gnu/openvpn/plugins/openvpn-plugin-systemd-resolved.so" \
+    "/usr/lib/openvpn/plugins/openvpn-plugin-systemd-resolved.so" \
+    "/usr/lib64/openvpn/plugins/openvpn-plugin-systemd-resolved.so" \
+    "/lib/openvpn/plugins/openvpn-plugin-systemd-resolved.so" \
+    "/usr/lib64/openvpn/plugins/systemd-resolved/openvpn-plugin-systemd-resolved.so"; do
+    if [ -f "$p" ]; then HAVE_SYSTEMD_RESOLVED_PLUGIN=1; PLUGIN_PATH="$p"; break; fi
+  done
+fi
+
+if [ $HAVE_SYSTEMD_RESOLVED_PLUGIN -eq 1 ]; then
+  echo "Found systemd-resolved plugin at: $PLUGIN_PATH (preferred)."
+else
+  if [ $HAVE_RESOLVED_SCRIPT -eq 1 ]; then
+    echo "Plugin not found; external helper script detected at: ${RESOLVED_SCRIPT_PATH:-unknown}."
+    echo "Note: The helper prefers plugin mode; external script will be used as a fallback."
+  else
+    echo "Neither systemd-resolved plugin nor helper script found. DNS integration may be unavailable until you install the plugin."
+  fi
 fi
 
 # Enable systemd-resolved service if present
 if systemctl list-unit-files | grep -q '^systemd-resolved.service'; then
   echo "Enabling and starting systemd-resolved..."
   systemctl enable --now systemd-resolved || true
+
+  # If systemd-resolved is active, ensure /etc/resolv.conf points to the stub resolver
+  if systemctl is-active --quiet systemd-resolved; then
+    STUB="/run/systemd/resolve/stub-resolv.conf"
+    ALT="/run/systemd/resolve/resolv.conf"
+    CURRENT_TARGET=""
+    if [ -L "/etc/resolv.conf" ]; then
+      CURRENT_TARGET="$(readlink -f /etc/resolv.conf 2>/dev/null || true)"
+    fi
+    if [ ! -L "/etc/resolv.conf" ] || { [ -n "$CURRENT_TARGET" ] && [ "$CURRENT_TARGET" != "$STUB" ] && [ "$CURRENT_TARGET" != "$ALT" ]; }; then
+      echo "Configuring /etc/resolv.conf to use systemd-resolved stub (backing up current file)."
+      TS="$(date +%Y%m%d-%H%M%S)"
+      cp -f --preserve=mode,ownership,timestamps /etc/resolv.conf "/etc/resolv.conf.backup-openvpn-py-$TS" 2>/dev/null || true
+      ln -sfn "$STUB" /etc/resolv.conf 2>/dev/null || true
+    fi
+  else
+    echo "Note: systemd-resolved is not active; leaving /etc/resolv.conf unchanged."
+  fi
 else
   echo "Note: systemd-resolved service not found. DNS integration may not activate."
 fi
@@ -166,9 +219,12 @@ SUDOERS_FILE="/etc/sudoers.d/$SUDOERS_FILE_NAME"
 {
   echo "# Allows users in the 'openvpn' group to run the helper script without a password"
   echo "%openvpn ALL=(ALL) NOPASSWD: $BIN_DIR/$HELPER_SCRIPT_NAME *"
+  echo "# Preserve selected environment variables for the helper"
+  echo "Defaults:%openvpn env_keep += \"OPENVPN_PY_FORCE_PLUGIN_PATH OPENVPN_PY_DISABLE_EXTERNAL OPENVPN_PY_ASSUME_AA_ENFORCE OPENVPN_PY_VERB\""
   if [ -n "${SUDO_USER:-}" ]; then
     echo "# Also allow the installing user to run it immediately (no relogin needed)"
     echo "$SUDO_USER ALL=(ALL) NOPASSWD: $BIN_DIR/$HELPER_SCRIPT_NAME *"
+    echo "Defaults:$SUDO_USER env_keep += \"OPENVPN_PY_FORCE_PLUGIN_PATH OPENVPN_PY_DISABLE_EXTERNAL OPENVPN_PY_ASSUME_AA_ENFORCE OPENVPN_PY_VERB\""
   fi
 } > "$SUDOERS_FILE"
 # Set correct permissions for the sudoers file

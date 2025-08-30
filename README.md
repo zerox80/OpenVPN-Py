@@ -9,7 +9,9 @@ A simple Python-based GUI for OpenVPN, built with PyQt6. This application provid
 - **Connect/Disconnect**: Start and stop VPN connections with a single click.
 - **System Tray Icon**: A tray icon indicates the current connection status (Disconnected, Connecting, Connected, Error).
 - **Log Viewer**: View real-time logs from OpenVPN for troubleshooting.
-- **Leak Protection**: Supports standard OpenVPN directives for DNS and IPv6 leak protection (`update-resolv-conf` and `block-outside-dns`).
+- **Quick Logs Access**: Open the logs folder directly from the View menu or the tray icon.
+- **Remembers Last Selection**: The app restores your last selected VPN configuration on startup.
+- **Leak Protection**: Uses systemd-resolved integration when available (plugin preferred). Falls back to scripts if allowed. IPv6/DNS leak protection is applied accordingly.
 - **Internationalization**: Available in English and German.
 
 ---
@@ -74,6 +76,8 @@ sudo usermod -aG openvpn $USER
    - Create a launcher at `/usr/local/bin/openvpn-py`.
    - Create a `.desktop` file for your application menu.
    - Create a `sudoers` rule to allow the app to run OpenVPN without a password prompt.
+   - Attempt to install and enable systemd-resolved integration for DNS leak protection (`openvpn-systemd-resolved`).
+   - If `systemd-resolved` is active, point `/etc/resolv.conf` to the stub resolver (backing up the original to `/etc/resolv.conf.backup-openvpn-py-<timestamp>`).
 
 ---
 
@@ -84,26 +88,64 @@ sudo usermod -aG openvpn $USER
 3. **Select a Config**: Choose the desired configuration from the list.
 4. **Connect**: Click the "Connect" button. You may be prompted for your sudo password and VPN password the first time. You can choose to save the VPN password securely in your system's keyring.
 5. **Disconnect**: Click the "Disconnect" button to terminate the connection.
+6. **Logs**:
+   - View live logs in the main window or open the dedicated Logs Window via View → "Open Logs Window".
+   - Open the logs folder in your file manager via View → "Open Logs Folder" or from the tray icon.
+   - The helper exposes logs in your Documents folder under `~/Documents/OpenVPN-Py/` (or localized `~/Dokumente/OpenVPN-Py/`). It creates:
+     - `openvpn-<config>.log` → symlink to the current session log for that config
+     - `openvpn-current.log` → symlink to the most recent session log (any config)
+     - On disconnect, an archived copy: `openvpn-<config>-YYYYMMDD-HHMMSS.log`
 
 ---
 
-## Configuration for Leak Protection
+## DNS and Leak Protection Details
 
-To ensure DNS and IPv6 leaks are prevented, make sure your `.ovpn` files contain the following lines. This script relies on OpenVPN's native capabilities to manage routes and DNS.
+- The helper (`scripts/openvpn-gui-helper.sh`) prefers the `openvpn-plugin-systemd-resolved.so` plugin. With OpenVPN ≥ 2.5 it adds `--dhcp-option DOMAIN-ROUTE .` automatically to route all DNS via VPN.
+- If the plugin is unavailable, it falls back to `update-systemd-resolved` (and then to `update-resolv-conf`) when AppArmor allows external scripts.
+- If neither plugin nor scripts are usable, scripts are disabled and DNS may leak. Install `openvpn-systemd-resolved` or allow one of the scripts to avoid leaks.
+- AppArmor detection defaults to NOT enforcing if `aa-status` is missing. You can force conservative behavior by setting `OPENVPN_PY_ASSUME_AA_ENFORCE=1` in the environment before launching.
 
-```
-# Example lines to add to your .ovpn file
-# For DNS leak protection
-up /etc/openvpn/update-resolv-conf
-down /etc/openvpn/update-resolv-conf
+Tips for configs:
+- You usually do not need to add DNS hooks manually. The helper sanitizes legacy `up`/`down` lines to avoid conflicts and applies the appropriate integration.
+- For IPv6-only concerns, consider adding the usual `pull-filter ignore "route-ipv6"`/`"ifconfig-ipv6"` directives if your VPN is IPv4-only.
 
-# For blocking DNS servers on non-VPN interfaces
-block-outside-dns
+---
 
-# To prevent IPv6 leaks if the VPN is IPv4-only
-pull-filter ignore "route-ipv6"
-pull-filter ignore "ifconfig-ipv6"
-```
+## Troubleshooting
+
+- **No passwordless sudo for the helper**:
+  - Ensure you are in the `openvpn` group and re-login:
+    ```bash
+    id -nG
+    sudo usermod -aG openvpn "$USER" # then log out/in or run: newgrp openvpn
+    ```
+  - Verify the sudoers rule exists and is valid:
+    ```bash
+    sudo ls -l /etc/sudoers.d/openvpn-py-sudoers
+    sudo visudo -cf /etc/sudoers.d/openvpn-py-sudoers
+    ```
+  - Quick check that sudoers allows the helper without prompting (should print a status word like "disconnected"):
+    ```bash
+    sudo -n /usr/local/bin/openvpn-gui-helper.sh status dummy.ovpn || echo "helper not allowed by sudoers"
+    ```
+
+- **Logs not appearing in Documents**:
+  - The helper writes runtime logs to `/run/openvpn/` and creates symlinks in `~/Documents/OpenVPN-Py/` (or `~/Dokumente/OpenVPN-Py/`). Expected files:
+    - `openvpn-<config>.log` (symlink to the live log for that config)
+    - `openvpn-current.log` (symlink to the most recent session)
+    - Archived files like `openvpn-<config>-YYYYMMDD-HHMMSS.log` after disconnect
+  - Ensure the directory exists and is writable by your user:
+    ```bash
+    ls -l ~/Documents/OpenVPN-Py || ls -l ~/Dokumente/OpenVPN-Py
+    ```
+
+- **DNS leaks or name resolution issues**:
+  - Install and enable `systemd-resolved` integration (preferred) or ensure one of the DNS helper scripts is available.
+  - The helper prefers the `openvpn-plugin-systemd-resolved.so` plugin. If missing and AppArmor allows scripts, it falls back to `update-systemd-resolved` (then `update-resolv-conf`).
+  - If AppArmor detection is uncertain and you want to force conservative behavior (avoid external scripts), launch the app with:
+    ```bash
+    OPENVPN_PY_ASSUME_AA_ENFORCE=1 openvpn-py
+    ```
 
 ---
 
