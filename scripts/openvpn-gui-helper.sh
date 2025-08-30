@@ -136,9 +136,9 @@ case "$COMMAND" in
         SERVICE_LOG="$AUTH_DIR/${SERVICE_FULL}.log"
         # Ensure parent dir for GUI log exists and point it to the service log
         mkdir -p "$(dirname "$LOG_PATH")" || true
-        # Create/empty the service log with strict perms and link GUI log to it
+        # Create/empty the service log and link GUI log to it (GUI must be able to read)
         : > "$SERVICE_LOG"
-        chmod 600 "$SERVICE_LOG"
+        chmod 644 "$SERVICE_LOG"
         ln -sfn "$SERVICE_LOG" "$LOG_PATH" || true
 
         # Build up/down arguments: only override if the config does not define its own
