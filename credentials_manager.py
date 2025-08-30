@@ -45,6 +45,16 @@ class CredentialsManager:
         try:
             username = keyring.get_password(service_name, "username")
             password = keyring.get_password(service_name, "password")
+            # Normalize and trim
+            if username is not None:
+                username = username.strip()
+            if password is not None:
+                password = password.strip()
+            # Treat empty strings as missing
+            if username == "":
+                username = None
+            if password == "":
+                password = None
             if username is not None or password is not None:
                 logger.info(f"Retrieved credentials for {config_path.name}")
             return username, password
@@ -67,8 +77,15 @@ class CredentialsManager:
 
         service_name = self._get_service_name(config_path)
         try:
-            keyring.set_password(service_name, "username", username or "")
-            keyring.set_password(service_name, "password", password or "")
+            # Trim inputs
+            username = (username or "").strip()
+            password = (password or "").strip()
+            # Do not save empty credentials
+            if not username or not password:
+                logger.warning("Refusing to save empty credentials.")
+                return
+            keyring.set_password(service_name, "username", username)
+            keyring.set_password(service_name, "password", password)
             logger.info(f"Saved credentials for {config_path.name}")
         except NoKeyringError:
             logger.warning(

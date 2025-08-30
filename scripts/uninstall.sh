@@ -35,6 +35,9 @@ else
   echo "No running GUI-managed OpenVPN services found."
 fi
 
+# Also kill any remaining openvpn processes that include our unit hint (very best-effort)
+pgrep -a openvpn | grep -E 'openvpn-py-gui@' | awk '{print $1}' | xargs -r kill || true
+
 # --- Remove sudoers file ---
 SUDOERS_FILE="/etc/sudoers.d/$SUDOERS_FILE_NAME"
 if [ -f "$SUDOERS_FILE" ]; then
@@ -70,6 +73,13 @@ else
     echo "Helper script symlink not found, skipping."
 fi
 
+# --- Remove sanitized configs and credentials directory created by helper ---
+ETC_DIR="/etc/openvpn/openvpn-py"
+if [ -d "$ETC_DIR" ]; then
+    echo "Removing helper etc directory: $ETC_DIR"
+    rm -rf "$ETC_DIR"
+fi
+
 # --- Remove installation directory ---
 if [ -d "$INSTALL_DIR" ]; then
     echo "Removing installation directory: $INSTALL_DIR"
@@ -83,6 +93,39 @@ if [ -d "/run/openvpn-py" ]; then
     echo "Removing transient auth directory: /run/openvpn-py"
     rm -rf "/run/openvpn-py"
 fi
+
+# --- Remove logs created in /run/openvpn by helper ---
+find /run/openvpn -maxdepth 1 -type f -name 'openvpn-py-*.log' -exec rm -f {} + 2>/dev/null || true
+
+# --- Remove user-visible log symlinks and dirs in Documents/Dokumente ---
+cleanup_user_logs() {
+  local user_home="$1"
+  for d in "Documents" "Dokumente"; do
+    local base_dir="$user_home/$d/OpenVPN-Py"
+    if [ -d "$base_dir" ]; then
+      echo "Cleaning log symlinks in: $base_dir"
+      rm -f "$base_dir"/openvpn-current.log 2>/dev/null || true
+      rm -f "$base_dir"/openvpn-last.log 2>/dev/null || true
+      # Attempt to remove dir if empty
+      rmdir "$base_dir" 2>/dev/null || true
+    fi
+  done
+}
+
+# Prefer removing for all users under /home
+for H in /home/*; do
+  [ -d "$H" ] || continue
+  cleanup_user_logs "$H"
+done
+
+# Also remove for the installing user (covers non-standard homes)
+if [ -n "${SUDO_USER:-}" ]; then
+  user_home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+  [ -n "$user_home" ] && [ -d "$user_home" ] && cleanup_user_logs "$user_home"
+fi
+
+# --- Reload systemd one last time ---
+systemctl daemon-reload || true
 
 echo ""
 echo "Uninstallation complete."

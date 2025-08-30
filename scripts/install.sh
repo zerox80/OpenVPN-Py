@@ -55,6 +55,11 @@ mkdir -p "$INSTALL_DIR/scripts"
 mkdir -p "$INSTALL_DIR/i18n"
 mkdir -p "$INSTALL_DIR/icons"
 
+# Ensure sanitized config directory exists for helper (stable path)
+SANITIZED_DIR="/etc/openvpn/openvpn-py/sanitized"
+mkdir -p "$SANITIZED_DIR"
+chmod 0750 "$SANITIZED_DIR" || true
+
 # --- Create Python virtual environment ---
 echo "Creating Python virtual environment in $VENV_DIR..."
 python3 -m venv "$VENV_DIR"
@@ -74,6 +79,44 @@ cp "$SCRIPT_PARENT_DIR"/icons/$ICON_NAME "$INSTALL_DIR/icons/"
 
 # Ensure helper script is executable
 chmod +x "$INSTALL_DIR/scripts/$HELPER_SCRIPT_NAME"
+
+# --- Optional: set up systemd-resolved integration for DNS (prevents DNS leaks) ---
+echo "Checking for systemd-resolved OpenVPN integration..."
+# Detect presence of update-systemd-resolved script or plugin
+HAVE_RESOLVED_SCRIPT=0
+for s in \
+  "/etc/openvpn/update-systemd-resolved" \
+  "/etc/openvpn/scripts/update-systemd-resolved" \
+  "/usr/libexec/openvpn/update-systemd-resolved" \
+  "/usr/lib/openvpn/plugins/update-systemd-resolved"; do
+  if [ -x "$s" ]; then HAVE_RESOLVED_SCRIPT=1; break; fi
+done
+
+if [ $HAVE_RESOLVED_SCRIPT -eq 0 ]; then
+  echo "systemd-resolved helper not found. Attempting to install 'openvpn-systemd-resolved'..."
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update -y || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y openvpn-systemd-resolved || true
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y openvpn-systemd-resolved || true
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y openvpn-systemd-resolved || true
+  elif command -v zypper >/dev/null 2>&1; then
+    zypper --non-interactive install openvpn-systemd-resolved || true
+  elif command -v pacman >/dev/null 2>&1; then
+    pacman --noconfirm -S openvpn-systemd-resolved || true
+  else
+    echo "Note: Unknown package manager. Please install 'openvpn-systemd-resolved' manually to enable DNS integration."
+  fi
+fi
+
+# Enable systemd-resolved service if present
+if systemctl list-unit-files | grep -q '^systemd-resolved.service'; then
+  echo "Enabling and starting systemd-resolved..."
+  systemctl enable --now systemd-resolved || true
+else
+  echo "Note: systemd-resolved service not found. DNS integration may not activate."
+fi
 
 # --- Compile translations ---
 echo "Compiling translation files..."

@@ -16,6 +16,7 @@ import constants as C
 from ui.config_list import ConfigList
 from ui.control_panel import ControlPanel
 from ui.log_viewer import LogViewer
+from ui.logs_window import LogsWindow
 from vpn_manager import VPNManager
 from config_manager import ConfigManager, ConfigExistsError
 from credentials_manager import CredentialsManager
@@ -39,6 +40,9 @@ class MainWindow(QMainWindow):
         self.config_list = ConfigList()
         self.control_panel = ControlPanel()
         self.log_viewer = LogViewer()
+
+        # Logs window (lazy-created)
+        self.logs_window = None
 
         # --- State Variables ---
         self.selected_config_path: Optional[str] = None
@@ -68,6 +72,11 @@ class MainWindow(QMainWindow):
 
         main_layout.addWidget(splitter)
 
+        # Menu bar
+        menubar = self.menuBar()
+        view_menu = menubar.addMenu(self.tr("View"))
+        self.open_logs_action = view_menu.addAction(self.tr("Open Logs Window"))
+
     def connect_signals(self):
         # ConfigList signals
         self.config_list.config_selected.connect(self.on_config_selected)
@@ -84,7 +93,11 @@ class MainWindow(QMainWindow):
 
         # VPNManager signals
         self.vpn_manager.state_changed.connect(self.control_panel.update_state)
-        self.vpn_manager.log_received.connect(self.log_viewer.add_log)
+        self.vpn_manager.state_changed.connect(self.on_state_changed)
+        self.vpn_manager.log_received.connect(self.on_log_received)
+
+        # Actions
+        self.open_logs_action.triggered.connect(self.open_logs_window)
 
     def load_configs(self):
         self.config_list.clear_configs()
@@ -118,7 +131,8 @@ class MainWindow(QMainWindow):
             Path(self.selected_config_path)
         )
 
-        if username is None or password is None:
+        # Ensure both present; otherwise, prompt
+        if not username or not password:
             dialog = CredentialsDialog(
                 self,
                 keyring_available=self.credentials_manager.keyring_available,
@@ -134,6 +148,26 @@ class MainWindow(QMainWindow):
                 return
 
         self.vpn_manager.connect(self.selected_config_path, username, password)
+
+    def on_state_changed(self, state):
+        # If authentication failed, offer to re-enter and update saved credentials
+        try:
+            if state == C.VpnState.AUTH_FAILED and self.selected_config_path:
+                dialog = CredentialsDialog(
+                    self,
+                    keyring_available=self.credentials_manager.keyring_available,
+                )
+                dialog.setWindowTitle(self.tr("Authentication failed - enter correct VPN credentials"))
+                if dialog.exec():
+                    username, password, save_creds = dialog.get_credentials()
+                    if save_creds:
+                        self.credentials_manager.save_credentials(
+                            Path(self.selected_config_path), username, password
+                        )
+                    # Try reconnecting immediately with new credentials
+                    self.vpn_manager.connect(self.selected_config_path, username, password)
+        except Exception:
+            pass
 
     def on_import_config(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -182,6 +216,25 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 logger.error(f"Failed to delete config: {e}")
                 self.show_error_message(self.tr("Deletion Failed"), str(e))
+
+    def open_logs_window(self):
+        if self.logs_window is None:
+            self.logs_window = LogsWindow(self)
+        # Refresh content from file on show
+        self.logs_window.load_from_file()
+        self.logs_window.show()
+        self.logs_window.raise_()
+        self.logs_window.activateWindow()
+
+    def on_log_received(self, message: str):
+        # Always append to inline viewer
+        self.log_viewer.add_log(message)
+        # Mirror to logs window if open
+        try:
+            if self.logs_window is not None and self.logs_window.isVisible():
+                self.logs_window.append_log(message)
+        except Exception:
+            pass
 
     def show_error_message(self, title, text):
         QMessageBox.critical(self, title, text)
